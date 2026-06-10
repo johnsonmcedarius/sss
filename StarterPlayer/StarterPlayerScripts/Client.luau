@@ -80,13 +80,46 @@ local cameraTrove = Trove.new()
 
 template.Parent = nil
 
--- Animation configuration for the sliding Cancel Frame
+-- Fixed Golden Coordinates for CancelFrame sliding (requires AnchorPoint 1, 0.5 in Studio)
 local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local onScreenPosition = UDim2.new(1, -20, 0.5, 0)
-local offScreenPosition = UDim2.new(1, 300, 0.5, 0)
+local onScreenPosition = UDim2.new(0.95, 0, 0.5, 0) -- 5% buffer from right edge
+local offScreenPosition = UDim2.new(1.3, 0, 0.5, 0) -- Hidden completely off-screen
 
 -- Declarations
 local EnterEditMode
+
+-- Returns the physical floor/base of the player's claimed plot
+local function GetPlayerPlotBase(): BasePart?
+	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
+	if not claimedPlotName then return nil end
+
+	local plotModel: Instance? = workspace:FindFirstChild(claimedPlotName)
+	if plotModel then
+		local base: Instance? = plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part")
+		if base and base:IsA("BasePart") then
+			return base
+		end
+	end
+	return nil
+end
+
+-- Dynamic visual state driver for GridTexture scaling using transparency
+local function UpdateGridTextureVisuals(forceDisable: boolean?)
+	local base = GetPlayerPlotBase()
+	if not base then return end
+
+	local gridTexture = base:FindFirstChild("GridTexture")
+	if gridTexture and gridTexture:IsA("Texture") then
+		if forceDisable then
+			gridTexture.Transparency = 1 -- 100% transparent (hidden)
+		else
+			-- Show grid with subtle styling only when objects menu (build mode) is visible
+			gridTexture.Transparency = if objects.Visible then 0.5 else 1
+			gridTexture.StudsPerTileU = activeGridPrecision
+			gridTexture.StudsPerTileV = activeGridPrecision
+		end
+	end
+end
 
 local function SlideCancelFrame(show: boolean, itemName: string?)
 	if show and itemName then
@@ -99,7 +132,6 @@ end
 
 -- Safely resets any active placing, deleting, or editing flows
 local function CancelActiveSession()
-	-- If we were moving an item and hit cancel, snap it back to its original location
 	if isEditing and editingInstance and originalCF then
 		editingInstance.Parent = workspace.Objects
 		editingInstance:PivotTo(originalCF)
@@ -114,6 +146,7 @@ local function CancelActiveSession()
 	PlacingService.Cancel()
 	previewHighlight.Adornee = nil
 	SlideCancelFrame(false)
+	UpdateGridTextureVisuals()
 end
 
 local function RefreshAvailablePlots()
@@ -179,6 +212,9 @@ local function CycleGridPrecision()
 	if targetIcon then
 		gridButton.Image = targetIcon
 	end
+
+	-- Refresh grid texture size instantly on the floor
+	UpdateGridTextureVisuals()
 end
 
 local function UpdateHistoryUI()
@@ -250,11 +286,11 @@ local function SetupViewportPreview(viewport: ViewportFrame, originalObject: Ins
 	camera.Parent = viewport
 end
 
--- Default Sims-style edit mode (Select & Move already placed furniture)
+-- Neutral selection state handling edit/hover checks
 function EnterEditMode()
 	CancelActiveSession()
+	UpdateGridTextureVisuals()
 
-	-- Keep checking what objects we hover over when build mode is active
 	previewTrove:BindToRenderStep("EditHover", Enum.RenderPriority.Camera.Value, function()
 		if not objects.Visible or isEditing then 
 			if not isEditing then previewHighlight.Adornee = nil end
@@ -270,7 +306,6 @@ function EnterEditMode()
 		local rootObject = GetTargetObject(target)
 
 		if rootObject then
-			-- Dynamic neon-blue hover state
 			previewHighlight.Adornee = rootObject
 			previewHighlight.OutlineColor = Color3.fromRGB(50, 150, 255)
 			previewHighlight.FillColor = Color3.fromRGB(50, 150, 255)
@@ -280,7 +315,6 @@ function EnterEditMode()
 		end
 	end)
 
-	-- Watch for player picking up a placed item
 	previewTrove:Connect(UserInputS.InputBegan, function(inputObject: InputObject, gameProcessedEvent: boolean)
 		if gameProcessedEvent then return end
 		if not objects.Visible or isEditing then return end
@@ -295,14 +329,12 @@ function EnterEditMode()
 			local rootObject = GetTargetObject(target)
 
 			if rootObject then
-				-- Pocket the object to start moving
 				isEditing = true
 				editingInstance = rootObject
 				originalCF = rootObject:GetPivot()
 				editingPlacementId = rootObject:GetAttribute("PlacementId")
 				local objectName = rootObject.Name
 
-				-- Hide original item on the client so they can drag its preview
 				rootObject.Parent = nil
 
 				local asset = shared.Assets:FindFirstChild(objectName)
@@ -310,6 +342,9 @@ function EnterEditMode()
 					PlacingService.GridUnit = activeGridPrecision
 					PlacingService.SetPreview(asset)
 					SlideCancelFrame(true, "Moving: " .. objectName)
+
+					-- Ensure grid texture updates dynamically when moving items
+					UpdateGridTextureVisuals()
 
 					local editTrove = Trove.new()
 					previewTrove:Add(editTrove)
@@ -334,7 +369,6 @@ function EnterEditMode()
 							local canPlace: boolean = PlacingService.CanPlace
 							if not canPlace then return end
 
-							-- Tell server to delete original, and instantiate clone in its place
 							if editingInstance then
 								events.Remotes.Delete:FireServer({ Object = editingInstance })
 								editingInstance:Destroy()
@@ -349,7 +383,6 @@ function EnterEditMode()
 
 							PushAction("Place", objectName, CF, newPlacementId)
 
-							-- Clean state references and swap back to neutral selection
 							isEditing = false
 							editingInstance = nil
 							originalCF = nil
@@ -360,7 +393,6 @@ function EnterEditMode()
 						elseif placementInput.KeyCode == rotateY then
 							PlacingService.Rotate(Vector3.yAxis)
 						elseif placementInput.KeyCode == cancelKey then
-							-- Put original item back
 							if editingInstance then
 								editingInstance.Parent = workspace.Objects
 								editingInstance:PivotTo(originalCF)
@@ -376,7 +408,6 @@ function EnterEditMode()
 						end
 					end)
 				else
-					-- Fallback restore if asset model is missing
 					rootObject.Parent = workspace.Objects
 					isEditing = false
 					editingInstance = nil
@@ -389,6 +420,7 @@ end
 local function EnterDeleteMode()
 	CancelActiveSession()
 	SlideCancelFrame(true, "Trash Tool")
+	UpdateGridTextureVisuals()
 
 	previewTrove:BindToRenderStep("DeleteHover", Enum.RenderPriority.Camera.Value, function()
 		local raycastParams = RaycastParams.new()
@@ -479,6 +511,7 @@ for _, object: Instance in shared.Assets:GetChildren() do
 
 		local assetName = object.Name
 		SlideCancelFrame(true, "Placing: " .. assetName)
+		UpdateGridTextureVisuals()
 
 		previewTrove:Connect(renderedEvent, function(preview: Model, _, canPlace: boolean)
 			previewHighlight.Adornee = preview
@@ -536,6 +569,7 @@ if buildButton then
 			EnterEditMode()
 		else
 			CancelActiveSession()
+			UpdateGridTextureVisuals(true) -- Force fade out the grid on close
 		end
 	end)
 end
@@ -642,6 +676,8 @@ player:GetAttributeChangedSignal("ClaimedPlot"):Connect(function()
 
 		if objects.Visible then
 			EnterEditMode()
+		else
+			UpdateGridTextureVisuals(true) -- Hide grid texture on initial spawn
 		end
 	end
 end)
