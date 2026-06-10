@@ -56,7 +56,9 @@ local PlacingService = {
 
 -- Returns the physical floor/base of the player's claimed plot
 local function GetPlayerPlotBase(): BasePart?
-	local claimedPlotName: string = player:GetAttribute("ClaimedPlot") or "Plot1" -- Fallback to Plot1 for testing
+	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
+	if not claimedPlotName then return nil end -- Strictly enforce plot ownership on the client
+
 	local plotModel: Instance? = workspace:FindFirstChild(claimedPlotName)
 	if plotModel then
 		-- Search for a part specifically named "Base" or "PlotArea"
@@ -178,7 +180,7 @@ function PlacingService.Render(deltaTime: number): CFrame?
 	preview:PivotTo(targetCF)
 	PlacingService._CF = targetCF
 
-	-- Run strict validation containing boundaries of current player's plot base
+	-- Strictly obtain actual plot base without fallback
 	local plotBase: BasePart? = GetPlayerPlotBase()
 	local hasValidPlacement: boolean = Validation.HasValidPlacement(preview, plotBase)
 	PlacingService.CanPlace = hasValidPlacement
