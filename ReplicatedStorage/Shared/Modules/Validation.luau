@@ -19,7 +19,8 @@ end
 
 -- Checks if the preview is completely enclosed within the horizontal boundaries of the Plot Base
 function Validation.IsInsidePlot(toCheck: Instance, plotBase: BasePart?): boolean
-	if not plotBase then return true end -- If no plot base defined, bypass to allow testing anywhere
+	-- STRICT MODE: No plot claimed / validated means absolutely no building allowed!
+	if not plotBase then return false end 
 
 	local plotCF: CFrame = plotBase.CFrame
 	local plotSize: Vector3 = plotBase.Size
