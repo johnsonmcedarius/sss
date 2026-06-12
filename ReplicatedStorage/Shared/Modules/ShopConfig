@@ -1,0 +1,90 @@
+--!strict
+
+type RarityData = {
+	Weight: number,
+	MinStock: number,
+	MaxStock: number,
+	Multiplier: number,
+	BaseCost: number,
+}
+
+local ShopConfig = {
+	-- Centralized configuration for dynamic slot generation
+	MAX_SHOP_SLOTS = 3,
+
+	-- Rarities and their properties
+	Rarities = {
+		Common = {
+			Weight = 50,
+			MinStock = 10,
+			MaxStock = 20,
+			Multiplier = 1.0,
+			BaseCost = 100,
+		} :: RarityData,
+
+		Uncommon = {
+			Weight = 30,
+			MinStock = 5,
+			MaxStock = 10,
+			Multiplier = 1.5,
+			BaseCost = 250,
+		} :: RarityData,
+
+		Rare = {
+			Weight = 13,
+			MinStock = 2,
+			MaxStock = 5,
+			Multiplier = 2.5,
+			BaseCost = 500,
+		} :: RarityData,
+
+		Epic = {
+			Weight = 5,
+			MinStock = 1,
+			MaxStock = 2,
+			Multiplier = 4.0,
+			BaseCost = 1000,
+		} :: RarityData,
+
+		Legendary = {
+			Weight = 2,
+			MinStock = 0,
+			MaxStock = 1,
+			Multiplier = 8.0,
+			BaseCost = 2500,
+		} :: RarityData,
+	},
+}
+
+-- Parses names dynamically (e.g. "Vintage Common Crate" -> Style: "Vintage", Rarity: "Common")
+function ShopConfig.ParseCrateName(toolName: string): { Name: string, Style: string, Rarity: string }?
+	local matchedRarity: string? = nil
+
+	for rarityName, _ in pairs(ShopConfig.Rarities) do
+		if string.find(toolName, rarityName) then
+			matchedRarity = rarityName
+			break
+		end
+	end
+
+	if not matchedRarity then
+		warn(`[ShopConfig]: Failed to resolve rarity keyword inside tool asset: "{toolName}"`)
+		return nil
+	end
+
+	-- Isolate the style string by filtering out the rarity and "Crate" words
+	local cleanString: string = string.gsub(toolName, matchedRarity, "")
+	cleanString = string.gsub(cleanString, "Crate", "")
+	cleanString = string.gsub(cleanString, "%s+", " ") -- Flatten duplicate whitespaces
+
+	-- Trim flanking whitespaces
+	local style: string = string.match(cleanString, "^%s*(.-)%s*$") or "Unknown"
+
+	return {
+		Name = toolName,
+		Style = style,
+		Rarity = matchedRarity,
+	}
+end
+
+return ShopConfig
