@@ -1,0 +1,101 @@
+--!strict
+
+local Players = game:GetService("Players")
+local CollectionS = game:GetService("CollectionService")
+local RepS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local shared = RepS:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+local libraries = RepS:WaitForChild("Libraries")
+
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local Trove = require(libraries:WaitForChild("Trove"))
+
+local CrateToolController = {}
+local characterTrove = Trove.new()
+
+-- Placeholder asset ID for heavy carry holding animation. 
+-- Replace this ID with your custom published dual-arm carry animation!
+local CARRY_ANIMATION_ID = "rbxassetid://10472719586" 
+
+local activeTrack: AnimationTrack? = nil
+local currentEquippedCrate: Tool? = nil
+
+-- Checks if a tool instance is a valid marketplace crate using our config parses
+local function IsCrateTool(tool: Tool): boolean
+	local parsed = ShopConfig.ParseCrateName(tool.Name)
+	return parsed ~= nil
+end
+
+-- Safely cleans up the active carry track and resets player stance
+local function StopCarryAnimation()
+	if activeTrack then
+		activeTrack:Stop()
+		activeTrack:Destroy()
+		activeTrack = nil
+	end
+	currentEquippedCrate = nil
+end
+
+-- Loads and plays the custom carry animation safely onto the character's animator
+local function PlayCarryAnimation(character: Model, tool: Tool)
+	local humanoid = character:WaitForChild("Humanoid") :: Humanoid?
+	if not humanoid then return end
+
+	local animator = humanoid:WaitForChild("Animator") :: Animator?
+	if not animator then return end
+
+	StopCarryAnimation()
+	currentEquippedCrate = tool
+
+	-- Construct standard temporary animation instance
+	local animation = Instance.new("Animation")
+	animation.AnimationId = CARRY_ANIMATION_ID
+
+	local success, err = pcall(function()
+		activeTrack = animator:LoadAnimation(animation)
+		if activeTrack then
+			activeTrack.Priority = Enum.AnimationPriority.Action
+			activeTrack.Looped = true
+			activeTrack:Play()
+		end
+	end)
+
+	if not success then
+		warn(`[CrateToolController]: Failed to load custom carrying animation: {err}`)
+	end
+end
+
+-- Set up listeners for the player character lifecycle
+local function HandleCharacter(character: Model)
+	characterTrove:Clean()
+
+	-- Track when a tool is equipped (equipped tools are parented straight to the Character model)
+	characterTrove:Connect(character.ChildAdded, function(child: Instance)
+		if child:IsA("Tool") and IsCrateTool(child) then
+			PlayCarryAnimation(character, child)
+		end
+	end)
+
+	-- Track when a tool is unequipped (unequipped tools leave the character model)
+	characterTrove:Connect(character.ChildRemoved, function(child: Instance)
+		if child:IsA("Tool") and child == currentEquippedCrate then
+			StopCarryAnimation()
+		end
+	end)
+end
+
+function CrateToolController.Initialize()
+	-- Connect to current character if already spawned
+	if player.Character then
+		HandleCharacter(player.Character)
+	end
+
+	-- Bind to future character respawn cycles
+	player.CharacterAdded:Connect(HandleCharacter)
+
+	print("[CrateToolController INITIALIZED] Dynamic carrying animation listener active.")
+end
+
+return CrateToolController
