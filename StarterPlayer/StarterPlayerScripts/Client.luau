@@ -20,6 +20,10 @@ local ParamsBuilder = require(libraries.ParamsBuilder)
 
 local PlacingService = require(modules.PlacingService)
 
+-- Integrate our newly built Shop and Carry Animation Controllers
+local ShopController = require(modules.ShopController)
+local CrateToolController = require(modules.CrateToolController)
+
 local player: Player = Players.LocalPlayer
 local camera: Camera = workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
@@ -729,3 +733,7 @@ do
 	local char: Model? = player.Character
 	if char then OnCharacterAdded(char) end
 end
+
+-- Initialize Shop and Crate Tool controllers on startup
+ShopController.Initialize()
+CrateToolController.Initialize()
