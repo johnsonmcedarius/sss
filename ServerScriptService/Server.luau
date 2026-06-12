@@ -6,6 +6,11 @@ local events = RepS.Events
 
 local Validation = require(shared.Modules.Validation)
 
+-- Locate and initialize our newly built Shop Service module
+local serverScriptService = game:GetService("ServerScriptService")
+local serverModules = serverScriptService:WaitForChild("Modules")
+local ShopService = require(serverModules:WaitForChild("ShopService"))
+
 -- Secure retrieval of the exact floor/boundary of the player's plot
 local function GetPlayerPlotBase(player: Player): BasePart?
 	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
@@ -114,3 +119,5 @@ Players.PlayerRemoving:Connect(function(player: Player)
 		end
 	end
 end)
+
+ShopService.Initialize()
