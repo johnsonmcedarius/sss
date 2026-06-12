@@ -1,0 +1,252 @@
+--!strict
+
+local Players = game:GetService("Players")
+local RunS = game:GetService("RunService")
+local RepS = game:GetService("ReplicatedStorage")
+local TweenS = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
+
+local shared = RepS:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+local libraries = RepS:WaitForChild("Libraries")
+
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local Trove = require(libraries:WaitForChild("Trove"))
+
+-- Physical Workspace Bindings for Interaction
+local shopCounter = workspace:WaitForChild("ShopCounter")
+local proximityPrompt = shopCounter:WaitForChild("ProximityPrompt") :: ProximityPrompt
+
+local ShopController = {}
+local stockTrove = Trove.new()
+
+-- UI Selection Bindings
+local shopGui: ScreenGui? = nil
+local scrollingFrame: ScrollingFrame? = nil
+local shopTemplate: TextButton? = nil
+local timerLabel: TextLabel? = nil
+
+-- Network Remote Bindings
+local shopStockUpdatedRemote: RemoteEvent? = nil
+local purchaseRequestRemote: RemoteEvent? = nil
+local purchaseResponseRemote: RemoteEvent? = nil
+
+-- Simple UI block state to prevent fast-click network spamming
+local purchaseDebounce = false
+
+-- Dynamic search for physical crate tool assets inside ReplicatedStorage
+local function FindCrateToolInStorage(crateName: string): Tool?
+	local cratesFolder = RepS.Shared:FindFirstChild("Crates")
+	if not cratesFolder then return nil end
+
+	for _, folder in ipairs(cratesFolder:GetChildren()) do
+		if folder:IsA("Folder") then
+			local tool = folder:FindFirstChild(crateName)
+			if tool and tool:IsA("Tool") then
+				return tool
+			end
+		end
+	end
+	return nil
+end
+
+-- Safely isolates structural parts of a tool and builds a clean visual preview assembly
+local function BuildViewportModel(originalTool: Tool): Model
+	local visualModel = Instance.new("Model")
+	visualModel.Name = originalTool.Name
+
+	-- Find handles or mesh parts to clone
+	for _, child in ipairs(originalTool:GetChildren()) do
+		if child:IsA("BasePart") or child:IsA("MeshPart") then
+			local partClone = child:Clone() :: BasePart
+			partClone.Anchored = true
+			partClone.CanCollide = false
+			partClone.CanTouch = false
+			partClone.CanQuery = false
+			partClone.Parent = visualModel
+		end
+	end
+
+	-- Fallback if no parts found (or standard structure relies on nested models)
+	if #visualModel:GetChildren() == 0 then
+		for _, descendant in ipairs(originalTool:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				local partClone = descendant:Clone() :: BasePart
+				partClone.Anchored = true
+				partClone.CanCollide = false
+				partClone.CanTouch = false
+				partClone.CanQuery = false
+				partClone.Parent = visualModel
+			end
+		end
+	end
+
+	return visualModel
+end
+
+-- Generates frame-perfect camera bounds and applies continuous rotating motion
+local function InitializeCrateViewport(viewport: ViewportFrame, itemModel: Model, parentTrove: any)
+	viewport:ClearAllChildren()
+	itemModel.Parent = viewport
+
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = 35
+	viewport.CurrentCamera = camera
+	camera.Parent = viewport
+	parentTrove:Add(camera)
+
+	-- Calculate dynamic camera offsets using bounding geometry
+	local centerCF: CFrame, boundingSize: Vector3 = itemModel:GetBoundingBox()
+	local maxDimension = math.max(boundingSize.X, boundingSize.Y, boundingSize.Z)
+	local cameraDistance = (maxDimension / (2 * math.tan(math.rad(camera.FieldOfView / 2)))) * 1.5
+
+	local currentRotation = 0
+
+	-- Bind smooth rotation to frame steps
+	parentTrove:BindToRenderStep(`ViewportRotate_{itemModel.Name}`, Enum.RenderPriority.Last.Value, function(dt: number)
+		currentRotation += math.rad(45) * dt -- Rotate 45 degrees per second
+
+		local targetRotationCF = centerCF * CFrame.Angles(0, currentRotation, 0)
+		local cameraOffset = Vector3.new(1, 0.8, 1).Unit * cameraDistance
+
+		camera.CFrame = CFrame.new(targetRotationCF.Position + cameraOffset, targetRotationCF.Position)
+	end)
+end
+
+-- Sets up local event listeners and UI connections
+function ShopController.Initialize()
+	shopGui = playerGui:WaitForChild("ShopGui") :: ScreenGui
+	if not shopGui then
+		error("[ShopController]: Failed to locate 'ShopGui' in PlayerGui!")
+		return
+	end
+
+	scrollingFrame = shopGui:WaitForChild("ScrollingFrame") :: ScrollingFrame
+	shopTemplate = scrollingFrame:WaitForChild("ShopTemplate") :: TextButton
+	timerLabel = shopGui:WaitForChild("Timer") :: TextLabel
+
+	-- Ensure the edit-mode template doesn't clutter the initial screen state
+	shopTemplate.Visible = false
+
+	-- Listen for the player interacting with the physical register
+	proximityPrompt.Triggered:Connect(function(playerWhoTriggered)
+		if playerWhoTriggered == player and shopGui and scrollingFrame then
+			-- Toggle menu visibility state smoothly
+			local newState = not shopGui.Enabled
+			shopGui.Enabled = newState
+			scrollingFrame.Visible = newState
+		end
+	end)
+
+	-- Optional: Close button listener inside the GUI
+	local closeButton = shopGui:FindFirstChild("CloseButton", true) :: ImageButton?
+	if closeButton then
+		closeButton.MouseButton1Click:Connect(function()
+			if shopGui and scrollingFrame then
+				shopGui.Enabled = false
+				scrollingFrame.Visible = false
+			end
+		end)
+	end
+
+	-- Locate network Remotes safely
+	local eventsFolder = RepS:WaitForChild("Events")
+	local remotesFolder = eventsFolder:WaitForChild("Remotes")
+
+	shopStockUpdatedRemote = remotesFolder:WaitForChild("ShopStockUpdated") :: RemoteEvent
+	purchaseRequestRemote = remotesFolder:WaitForChild("PurchaseRequest") :: RemoteEvent
+	purchaseResponseRemote = remotesFolder:WaitForChild("PurchaseResponse") :: RemoteEvent
+
+	-- Bind to authoritative server stock update broadcasts
+	shopStockUpdatedRemote.OnClientEvent:Connect(function(payload)
+		ShopController.RenderMarketStock(payload)
+	end)
+
+	-- Bind to one-way server checkout response handshakes
+	purchaseResponseRemote.OnClientEvent:Connect(function(success: boolean, errorMessage: string?)
+		purchaseDebounce = false
+		if not success and errorMessage then
+			warn(`[ShopController]: Purchase failed - {errorMessage}`)
+		end
+	end)
+
+	print("[ShopController INITIALIZED] Ready to receive stock updates.")
+end
+
+-- Updates client canvas, binds countdown timer, and spawns slot templates
+function ShopController.RenderMarketStock(payload: any)
+	-- Step 1: Strict Zero-Leak Flush of previous active stock state!
+	stockTrove:Clean()
+
+	local expirationTimestamp: number = payload.Expiration
+	local stockData = payload.Stock
+
+	-- Step 2: Frame-Perfect Timer Updates via RenderStep
+	stockTrove:BindToRenderStep("ShopTimerUpdate", Enum.RenderPriority.Last.Value, function()
+		if not timerLabel then return end
+
+		local now = workspace:GetServerTimeNow()
+		local timeRemaining = math.max(0, expirationTimestamp - now)
+
+		if timeRemaining <= 0 then
+			timerLabel.Text = "00:00"
+			return
+		end
+
+		local minutes = math.floor(timeRemaining / 60)
+		local seconds = math.floor(timeRemaining % 60)
+		timerLabel.Text = string.format("%02d:%02d", minutes, seconds)
+	end)
+
+	-- Step 3: Dynamic Template Card Population
+	for crateName, details in pairs(stockData) do
+		if not shopTemplate or not scrollingFrame then continue end
+
+		-- Clone the base template and add to tracking trove immediately
+		local clonedCard = shopTemplate:Clone() :: TextButton
+		clonedCard.Name = crateName
+		clonedCard.Visible = true
+		clonedCard.Parent = scrollingFrame
+		stockTrove:Add(clonedCard)
+
+		-- Update TextLabels inside card
+		local crateLabel = clonedCard:FindFirstChild("TextLabel") :: TextLabel?
+		if crateLabel then
+			crateLabel.Text = crateName
+		end
+
+		local costLabel = clonedCard:FindFirstChild("cratecost") :: TextLabel?
+		if costLabel then
+			costLabel.Text = `$ {details.Price}`
+		end
+
+		-- Render 3D Viewport
+		local viewportFrame = clonedCard:FindFirstChildOfClass("ViewportFrame") :: ViewportFrame?
+		if viewportFrame then
+			local targetCrateTool = FindCrateToolInStorage(crateName)
+			if targetCrateTool then
+				local visualModel = BuildViewportModel(targetCrateTool)
+				stockTrove:Add(visualModel) -- Garbage collection safeguard
+
+				InitializeCrateViewport(viewportFrame, visualModel, stockTrove)
+			else
+				warn(`[ShopController]: Physical model asset for crate '{crateName}' not found in storage!`)
+			end
+		end
+
+		-- Step 4: Secure Click Interactions
+		clonedCard.MouseButton1Click:Connect(function()
+			if purchaseDebounce then return end
+			purchaseDebounce = true
+
+			print(`[ShopController]: Dispatching purchase request for: {crateName}`)
+			if purchaseRequestRemote then
+				purchaseRequestRemote:FireServer(crateName)
+			end
+		end)
+	end
+end
+
+return ShopController
