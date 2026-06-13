@@ -1,6 +1,7 @@
 --!strict
 
-type RarityData = {
+-- Define types to ensure airtight compiler compliance
+export type RarityData = {
 	Weight: number,
 	MinStock: number,
 	MaxStock: number,
@@ -8,11 +9,45 @@ type RarityData = {
 	BaseCost: number,
 }
 
+export type ItemProfile = {
+	Theme: string,
+	Category: "Shoes" | "Clothing" | "Accessories",
+	Rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary",
+	MeshName: string?,       -- Defined if using unique 3D model geometries (Shoes/Accessories)
+	TextureId: string?,      -- Defined if swapping textures on a universal base (Clothing)
+}
+
 local ShopConfig = {
 	-- Centralized configuration for dynamic slot generation
 	MAX_SHOP_SLOTS = 3,
 
-	-- Rarities and their properties
+	-- Airtight top-level Pricing Matrix (Category + Rarity lookup)
+	-- No more duplicating price numbers per item mesh! 
+	PricingMatrix = {
+		Shoes = {
+			Common = 100,
+			Uncommon = 250,
+			Rare = 500,
+			Epic = 1000,
+			Legendary = 2500,
+		},
+		Clothing = {
+			Common = 80,
+			Uncommon = 200,
+			Rare = 400,
+			Epic = 800,
+			Legendary = 2000,
+		},
+		Accessories = {
+			Common = 120,
+			Uncommon = 300,
+			Rare = 600,
+			Epic = 1200,
+			Legendary = 3000,
+		},
+	} :: { [string]: { [string]: number } },
+
+	-- Rarities and their unboxing/shop capacities
 	Rarities = {
 		Common = {
 			Weight = 50,
@@ -54,9 +89,71 @@ local ShopConfig = {
 			BaseCost = 2500,
 		} :: RarityData,
 	},
+
+	
+	Items = {
+		-- SHOES CATEGORY (Stored in ShoeMeshes folder)
+		["StreetwearHeel"] = {
+			Theme = "Streetwear",
+			Category = "Shoes",
+			Rarity = "Common",
+			MeshName = "StreetwearHeel"
+		} :: ItemProfile,
+		
+		["StreetwearSneaker"] = {
+			Theme = "Streetwear",
+			Category = "Shoes",
+			Rarity = "Common",
+			MeshName = "StreetwearSneaker"
+		} :: ItemProfile,
+		
+		["PreppyVans"] = {
+			Theme = "Preppy",
+			Category = "Shoes",
+			Rarity = "Uncommon",
+			MeshName = "PreppyVans"
+		} :: ItemProfile,
+
+		["CyberSneaker"] = {
+			Theme = "Cyberpunk",
+			Category = "Shoes",
+			Rarity = "Legendary",
+			MeshName = "CyberSneaker"
+		} :: ItemProfile,
+
+		-- CLOTHING CATEGORY (Clones universal hanger base + slaps dynamic texture)
+		["StreetwearHoodie"] = {
+			Theme = "Streetwear",
+			Category = "Clothing",
+			Rarity = "Common",
+			TextureId = "rbxassetid://13406201389" -- Use actual template image assets here!
+		} :: ItemProfile,
+
+		["CyberpunkCoat"] = {
+			Theme = "Cyberpunk",
+			Category = "Clothing",
+			Rarity = "Rare",
+			TextureId = "rbxassetid://13406201633"
+		} :: ItemProfile,
+
+		-- ACCESSORIES CATEGORY (Stored in AccessoryMeshes folder)
+		["CyberpunkNecklace"] = {
+			Theme = "Cyberpunk",
+			Category = "Accessories",
+			Rarity = "Epic",
+			MeshName = "CyberpunkNecklace"
+		} :: ItemProfile,
+
+		["PreppyHat"] = {
+			Theme = "Preppy",
+			Category = "Accessories",
+			Rarity = "Common",
+			MeshName = "PreppyHat"
+		} :: ItemProfile,
+	} :: { [string]: ItemProfile }
 }
 
--- Parses names dynamically (e.g. "Vintage Common Crate" -> Style: "Vintage", Rarity: "Common")
+-- Extracts name components from tools (e.g. "Vintage Common Crate" -> Style: "Vintage", Rarity: "Common")
 function ShopConfig.ParseCrateName(toolName: string): { Name: string, Style: string, Rarity: string }?
 	local matchedRarity: string? = nil
 
