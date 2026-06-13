@@ -10,6 +10,7 @@ local Validation = require(shared.Modules.Validation)
 local serverScriptService = game:GetService("ServerScriptService")
 local serverModules = serverScriptService:WaitForChild("Modules")
 local ShopService = require(serverModules:WaitForChild("ShopService"))
+local StockingService = require(serverModules:WaitForChild("StockingService"))
 
 -- Secure retrieval of the exact floor/boundary of the player's plot
 local function GetPlayerPlotBase(player: Player): BasePart?
@@ -96,6 +97,10 @@ events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: {
 		newObject:SetAttribute("PlacementId", placementId)
 	end
 
+	-- Dynamically stamp the creator's ID for secure stocking loops!
+	newObject:SetAttribute("PlacedBy", player.UserId)
+	newObject:SetAttribute("OccupiedSlots", 0)
+
 	newObject.Parent = workspace.Objects
 end)
 
@@ -120,4 +125,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
+local StockingService = require(serverModules:WaitForChild("StockingService"))
+
 ShopService.Initialize()
+StockingService.Initialize()
