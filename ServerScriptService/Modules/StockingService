@@ -1,0 +1,354 @@
+local CollectionS = game:GetService("CollectionService")
+local RepS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local shared = RepS:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local Validation = require(modules:WaitForChild("Validation"))
+
+local StockingService = {
+	_Initialized = false
+}
+
+-- Returns the physical base part of the player's claimed plot
+local function GetPlayerPlotBase(player: Player): BasePart?
+	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
+	if not claimedPlotName then return nil end
+
+	local plotModel: Instance? = workspace:FindFirstChild(claimedPlotName)
+	if plotModel then
+		local base: Instance? = plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part")
+		if base and base:IsA("BasePart") then
+			return base
+		end
+	end
+	return nil
+end
+
+-- Verifies if a crate style has any valid visual items matching the rack's category
+local function HasCompatibleItems(crateStyle: string, rackType: string): boolean
+	for _, item in pairs(ShopConfig.Items) do
+		if item.Theme == crateStyle and item.Category == rackType then
+			return true
+		end
+	end
+	return false
+end
+
+-- Procedural visual asset builder that bypasses active physics checks
+local function SetupVisualPhysics(itemModel: Instance)
+	for _, desc in ipairs(itemModel:GetDescendants()) do
+		if desc:IsA("BasePart") then
+			desc.Anchored = true
+			desc.CanCollide = false
+			desc.CanTouch = false
+			desc.CanQuery = false
+		elseif desc:IsA("ProximityPrompt") or desc:IsA("Script") then
+			desc:Destroy()
+		end
+	end
+end
+
+-- Rolls the gacha table utilizing the theme of the crate and filters by rack category
+local function RollSlotItem(player: Player, crateTheme: string, rackType: string): string?
+	-- Gather candidates matching style and category
+	local candidates = {}
+	for name, details in pairs(ShopConfig.Items) do
+		if details.Theme == crateTheme and details.Category == rackType then
+			table.insert(candidates, name)
+		end
+	end
+
+	-- Fallback if no matching theme is found: look for any item of the target category
+	if #candidates == 0 then
+		for name, details in pairs(ShopConfig.Items) do
+			if details.Category == rackType then
+				table.insert(candidates, name)
+			end
+		end
+	end
+
+	if #candidates == 0 then return nil end
+
+	-- Extract standard probability weights
+	local roll1 = math.random(1, 100)
+	local roll = roll1
+
+	-- Game Pass Integration: Roll twice and take the higher roll (skews probability directly to rare tiers)
+	local hasDoubleLuck = player:GetAttribute("DoubleLuck") == true or player:GetAttribute("HasDoubleLuck") == true
+	if hasDoubleLuck then
+		local roll2 = math.random(1, 100)
+		roll = math.max(roll1, roll2)
+	end
+
+	local selectedRarity = "Common"
+	local cumulativeWeight = 0
+
+	for rarityName, rarityInfo in pairs(ShopConfig.Rarities) do
+		cumulativeWeight += rarityInfo.Weight
+		if roll <= cumulativeWeight then
+			selectedRarity = rarityName
+			break
+		end
+	end
+
+	-- Filter candidates down to rolled rarity
+	local rarityPool = {}
+	for _, name in ipairs(candidates) do
+		local details = ShopConfig.Items[name]
+		if details and details.Rarity == selectedRarity then
+			table.insert(rarityPool, name)
+		end
+	end
+
+	-- Gradual degradation fallback to ensure the gacha loop never fails
+	if #rarityPool == 0 then
+		for _, fallbackRarity in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary"}) do
+			for _, name in ipairs(candidates) do
+				local details = ShopConfig.Items[name]
+				if details and details.Rarity == fallbackRarity then
+					table.insert(rarityPool, name)
+				end
+			end
+			if #rarityPool > 0 then break end
+		end
+	end
+
+	if #rarityPool > 0 then
+		return rarityPool[math.random(1, #rarityPool)]
+	end
+
+	return nil
+end
+
+-- Spawns the physical 3D items inside the designated slot targets after security approval
+local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCrate: any)
+	local character = player.Character
+	if not character then return end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then return end
+
+	-- ==========================================
+	-- LAYER 1: STRICT DISTANCE-SANITY CHECK
+	-- ==========================================
+	local distance = (hrp.Position - rack:GetPivot().Position).Magnitude
+	if distance > 15 then
+		warn(`[Stocking Security]: Dropping connection! {player.Name} attempted to stock a rack from {math.round(distance)} studs away (Max allowed: 15).`)
+		return
+	end
+
+	-- ==========================================
+	-- LAYER 2: PLOT OWNERSHIP & BOUNDS CHECK
+	-- ==========================================
+	local placedBy = rack:GetAttribute("PlacedBy")
+	if placedBy ~= player.UserId then
+		warn(`[Stocking Security]: Unauthorized stocking attempt! {player.Name} tried to stock a rack owned by Player ID {placedBy}.`)
+		return
+	end
+
+	local plotBase = GetPlayerPlotBase(player)
+	if not plotBase then
+		warn(`[Stocking Security]: Stocking rejected. Player {player.Name} does not own a claimed plot base.`)
+		return
+	end
+
+	-- Double-check that they didn't exploit the rack position to slide off their plot boundaries
+	local isInside = Validation.IsInsidePlot(rack, plotBase)
+	if not isInside then
+		warn(`[Stocking Security]: Exploit alert! {player.Name} tried to stock a rack located outside their plot boundaries!`)
+		return
+	end
+
+	-- ==========================================
+	-- LAYER 3: STATE & CATEGORY VALIDATION
+	-- ==========================================
+	local maxSlots = rack:GetAttribute("MaxSlots") or 4
+	local occupiedSlots = rack:GetAttribute("OccupiedSlots") or 0
+	local rackType = rack:GetAttribute("RackType") or "Shoes"
+
+	if occupiedSlots >= maxSlots then
+		warn(`[Stocking Service]: Stocking rejected. Rack is already fully stocked ({occupiedSlots}/{maxSlots} slots).`)
+		return
+	end
+
+	-- Validate that this crate contains items that physically make sense on this rack type
+	local isCompatible = HasCompatibleItems(parsedCrate.Style, rackType)
+	if not isCompatible then
+		warn(`[Stocking Security]: Crate category mismatch! {player.Name} tried to stock a "{parsedCrate.Style}" crate on a "{rackType}" rack.`)
+		return
+	end
+
+	-- ==========================================
+	-- SECURITY PASSED: ATOMIC TRANSACTION BEGINS
+	-- ==========================================
+
+	-- Destroy the equipped tool instantly on the server to prevent click-spam activation duplication
+	tool:Destroy()
+
+	-- Establish a localized storage directory inside the model if missing
+	local displayFolder = rack:FindFirstChild("DisplayItems")
+	if not displayFolder then
+		displayFolder = Instance.new("Folder")
+		displayFolder.Name = "DisplayItems"
+		displayFolder.Parent = rack
+	end
+
+	-- Calculate iteration steps
+	local emptySlotsCount = maxSlots - occupiedSlots
+	local targetStockIndex = occupiedSlots
+
+	for step = 1, emptySlotsCount do
+		local rolledItemName = RollSlotItem(player, parsedCrate.Style, rackType)
+		if not rolledItemName then continue end
+
+		local itemConfig = ShopConfig.Items[rolledItemName]
+		if not itemConfig then continue end
+
+		targetStockIndex += 1
+
+		-- Look for visual Slot attachment targets
+		local attachmentName = `Slot{targetStockIndex}`
+		local attachment = rack:FindFirstChild(attachmentName, true) :: Attachment?
+		if not attachment then
+			warn(`[Stocking Service]: Visual placement attachment '{attachmentName}' not found on {rack.Name}!`)
+			continue
+		end
+
+		-- Visual Customization: Resolve cloned model geometry
+		local spawnedModel: Instance? = nil
+
+		if rackType == "Clothing" then
+			-- Clothing: Clones universal hanger base and glues texture template
+			local baseFolder = shared:FindFirstChild("BaseModels")
+			local hangerTemplate = baseFolder and baseFolder:FindFirstChild("HangingTorso")
+			if hangerTemplate then
+				local hangerClone = hangerTemplate:Clone() :: Model
+				local torsoPart = hangerClone:FindFirstChild("Torso") or hangerClone:FindFirstChildOfClass("MeshPart")
+				if torsoPart and torsoPart:IsA("MeshPart") and itemConfig.TextureId then
+					torsoPart.TextureID = itemConfig.TextureId
+				end
+				spawnedModel = hangerClone
+			else
+				-- Safe visual fallback if BaseModels directory isn't setup inside studio
+				local block = Instance.new("Part")
+				block.Size = Vector3.new(1.2, 1.6, 0.4)
+				block.Color = Color3.fromRGB(80, 80, 80)
+				spawnedModel = block
+			end
+		else
+			-- Shoes & Accessories: Directly clone pre-styled models from folders (WYSIWYG visual design!)
+			local merchandiseFolder = shared:FindFirstChild("Merchandise")
+			local meshesFolder = merchandiseFolder and (if rackType == "Shoes" then merchandiseFolder:FindFirstChild("ShoeMeshes") else merchandiseFolder:FindFirstChild("AccessoryMeshes"))
+
+			if meshesFolder then
+				local assetTemplate = meshesFolder:FindFirstChild(itemConfig.MeshName or "")
+				if assetTemplate then
+					spawnedModel = assetTemplate:Clone()
+				end
+			end
+		end
+
+		if not spawnedModel then
+			warn(`[Stocking Service]: Failed to build visual asset mesh for '{rolledItemName}'!`)
+			continue
+		end
+
+		-- Highly Optimize: Wipe active collisions and physics overhead
+		SetupVisualPhysics(spawnedModel)
+
+		-- Matrix dynamic cost assignments stamped directly onto model instance
+		local basePriceLookup = ShopConfig.PricingMatrix[rackType]
+		local targetValue = (basePriceLookup and basePriceLookup[itemConfig.Rarity]) or 50
+		spawnedModel:SetAttribute("SlotPrice", targetValue)
+		spawnedModel:SetAttribute("ItemName", rolledItemName)
+
+		-- Snap visually to designated slot coordinates
+		local targetWorldCF = attachment.WorldCFrame
+
+		if rackType == "Shoes" and spawnedModel:IsA("Model") then
+			-- Spawn double-aligned shoe visual groupings with rotational offsets
+			local parentGroup = Instance.new("Model")
+			parentGroup.Name = rolledItemName
+			parentGroup.Parent = displayFolder
+
+			local shoeLeft = spawnedModel
+			local shoeRight = spawnedModel:Clone()
+
+			SetupVisualPhysics(shoeRight)
+
+			shoeLeft.Parent = parentGroup
+			shoeRight.Parent = parentGroup
+
+			-- Position left and right pairs symmetrically on the attachment ledge
+			local leftOffset = targetWorldCF * CFrame.new(-0.2, 0, 0) * CFrame.Angles(0, math.rad(-5), 0)
+			local rightOffset = targetWorldCF * CFrame.new(0.2, 0, 0) * CFrame.Angles(0, math.rad(5), 0)
+
+			shoeLeft:PivotTo(leftOffset)
+			shoeRight:PivotTo(rightOffset)
+
+			parentGroup:SetAttribute("SlotPrice", targetValue)
+			parentGroup:SetAttribute("ItemName", rolledItemName)
+		else
+			-- Standard snap translation for clothes and accessories
+			spawnedModel.Parent = displayFolder
+			if spawnedModel:IsA("Model") then
+				spawnedModel:PivotTo(targetWorldCF)
+			elseif spawnedModel:IsA("BasePart") then
+				spawnedModel.CFrame = targetWorldCF
+			end
+		end
+	end
+
+	-- Replicate state changes across the network channel
+	rack:SetAttribute("OccupiedSlots", targetStockIndex)
+end
+
+-- Attaches server-side event handlers directly to the injected ProximityPrompt
+local function BindStockingPrompt(rack: Model)
+	local prompt = rack:FindFirstChildOfClass("ProximityPrompt")
+	if prompt then return end
+
+	-- Generate basic interactive prompt inside model
+	local newPrompt = Instance.new("ProximityPrompt")
+	newPrompt.ObjectText = "Stock Shelf"
+	newPrompt.ActionText = "Place Merchandise"
+	newPrompt.HoldDuration = 0.2
+	newPrompt.KeyboardKeyCode = Enum.KeyCode.E
+	newPrompt.Enabled = false -- Server baseline is hidden by default
+	newPrompt.MaxActivationDistance = 12
+	newPrompt.Parent = rack
+
+	newPrompt.Triggered:Connect(function(player)
+		local character = player.Character
+		local equippedTool = character and character:FindFirstChildOfClass("Tool")
+		if not equippedTool then return end
+
+		local parsed = ShopConfig.ParseCrateName(equippedTool.Name)
+		if parsed then
+			ProcessStocking(player, rack, equippedTool, parsed)
+		end
+	end)
+end
+
+-- Scans collection structures on server boot and hooks additions
+function StockingService.Initialize()
+	for _, inst in ipairs(CollectionS:GetTagged("RetailRack")) do
+		if inst:IsA("Model") then
+			BindStockingPrompt(inst)
+		end
+	end
+
+	CollectionS:GetInstanceAddedSignal("RetailRack"):Connect(function(instance)
+		if instance:IsA("Model") then
+			BindStockingPrompt(instance)
+		end
+	end)
+
+	StockingService._Initialized = true
+	print("[StockingService INITIALIZED] Automated retail rack injection loop active.")
+end
+
+return StockingService
