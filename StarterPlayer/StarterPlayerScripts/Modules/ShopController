@@ -1,5 +1,3 @@
---!strict
-
 local Players = game:GetService("Players")
 local RunS = game:GetService("RunService")
 local RepS = game:GetService("ReplicatedStorage")
