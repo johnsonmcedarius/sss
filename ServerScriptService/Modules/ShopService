@@ -1,5 +1,3 @@
---!strict
-
 local RepS = game:GetService("ReplicatedStorage")
 local HttpS = game:GetService("HttpService")
 local Players = game:GetService("Players")
