@@ -1,3 +1,5 @@
+--!strict
+
 local UserInputS = game:GetService("UserInputService")
 local RepS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -20,9 +22,10 @@ local ParamsBuilder = require(libraries.ParamsBuilder)
 
 local PlacingService = require(modules.PlacingService)
 
--- Integrate our newly built Shop and Carry Animation Controllers
+-- Integrate our newly built Shop, Carry Animation, and Stocking Controllers
 local ShopController = require(modules.ShopController)
 local CrateToolController = require(modules.CrateToolController)
+local StockingController = require(modules.StockingController)
 
 local player: Player = Players.LocalPlayer
 local camera: Camera = workspace.CurrentCamera
@@ -734,6 +737,9 @@ do
 	if char then OnCharacterAdded(char) end
 end
 
+local StockingController = require(modules.StockingController)
+
 -- Initialize Shop and Crate Tool controllers on startup
 ShopController.Initialize()
 CrateToolController.Initialize()
+StockingController.Initialize()
