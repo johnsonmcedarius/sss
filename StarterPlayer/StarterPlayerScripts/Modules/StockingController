@@ -1,0 +1,131 @@
+local Players = game:GetService("Players")
+local CollectionS = game:GetService("CollectionService")
+local RepS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local shared = RepS:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+local libraries = RepS:WaitForChild("Libraries")
+
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local Trove = require(libraries:WaitForChild("Trove"))
+
+local StockingController = {}
+local carryTrove = Trove.new()
+local activeEquippedCrate: Tool? = nil
+
+-- Checks if a tool is a valid crate and returns parsed name data
+local function IsCrateTool(tool: Tool): any?
+	return ShopConfig.ParseCrateName(tool.Name)
+end
+
+-- Iterates over all active retail racks on the client and configures prompt accessibility
+local function UpdateLocalPrompts(isHoldingCrate: boolean, crateStyle: string?)
+	local placedRacks = CollectionS:GetTagged("RetailRack")
+
+	for _, rack in ipairs(placedRacks) do
+		local prompt = rack:FindFirstChildOfClass("ProximityPrompt") :: ProximityPrompt?
+		if not prompt then continue end
+
+		-- If player isn't holding a crate, force disable all stocking prompts locally
+		if not isHoldingCrate or not crateStyle then
+			prompt.Enabled = false
+			continue
+		end
+
+		-- Read attributes securely
+		local rackType = rack:GetAttribute("RackType") :: string?
+		local maxSlots = rack:GetAttribute("MaxSlots") :: number?
+		local occupiedSlots = rack:GetAttribute("OccupiedSlots") :: number?
+		local placedBy = rack:GetAttribute("PlacedBy") :: number?
+
+		-- Security & Logic checks:
+		-- 1. Must be placed by the local player
+		-- 2. Rack must not be full
+		-- 3. Crate must have items compatible with this rack type
+		local isOwner = placedBy == player.UserId
+		local hasSpace = (occupiedSlots or 0) < (maxSlots or 0)
+
+		local hasCompatibleItem = false
+		if rackType then
+			for _, item in pairs(ShopConfig.Items) do
+				if item.Theme == crateStyle and item.Category == rackType then
+					hasCompatibleItem = true
+					break
+				end
+			end
+		end
+
+		if isOwner and hasSpace and hasCompatibleItem then
+			prompt.Enabled = true
+		else
+			prompt.Enabled = false
+		end
+	end
+end
+
+-- Syncs prompts when a new rack is instantiated mid-carry
+local function HandleRackAdded(rack: Instance)
+	if not rack:IsA("Model") then return end
+	if not activeEquippedCrate then return end
+
+	local parsed = IsCrateTool(activeEquippedCrate)
+	if parsed then
+		task.defer(function()
+			UpdateLocalPrompts(true, parsed.Style)
+		end)
+	end
+end
+
+-- Connects listeners for tool swapping on the character
+local function HandleCharacter(character: Model)
+	carryTrove:Clean()
+
+	-- Monitor tools equipped to the character model
+	carryTrove:Connect(character.ChildAdded, function(child: Instance)
+		if child:IsA("Tool") then
+			local parsed = IsCrateTool(child)
+			if parsed then
+				activeEquippedCrate = child
+				UpdateLocalPrompts(true, parsed.Style)
+			end
+		end
+	end)
+
+	-- Monitor tools leaving the character model
+	carryTrove:Connect(character.ChildRemoved, function(child: Instance)
+		if child:IsA("Tool") and child == activeEquippedCrate then
+			activeEquippedCrate = nil
+			UpdateLocalPrompts(false, nil)
+		end
+	end)
+end
+
+-- Entry initialization sequence
+function StockingController.Initialize()
+	if player.Character then
+		HandleCharacter(player.Character)
+	end
+
+	player.CharacterAdded:Connect(HandleCharacter)
+
+	-- Seamlessly catch any newly placed racks while carrying
+	CollectionS:GetInstanceAddedSignal("RetailRack"):Connect(HandleRackAdded)
+
+	-- Periodically double-check prompts in case attributes update asynchronously
+	task.spawn(function()
+		while true do
+			task.wait(1.5)
+			if activeEquippedCrate then
+				local parsed = IsCrateTool(activeEquippedCrate)
+				if parsed then
+					UpdateLocalPrompts(true, parsed.Style)
+				end
+			end
+		end
+	end)
+
+	print("[StockingController INITIALIZED] Dynamic local ProximityPrompt triggers primed.")
+end
+
+return StockingController
