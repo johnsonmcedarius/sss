@@ -1,5 +1,3 @@
---!strict
-
 -- Define types to ensure airtight compiler compliance
 export type RarityData = {
 	Weight: number,
@@ -14,7 +12,10 @@ export type ItemProfile = {
 	Category: "Shoes" | "Clothing" | "Accessories",
 	Rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary",
 	MeshName: string?,       -- Defined if using unique 3D model geometries (Shoes/Accessories)
-	TextureId: string?,      -- Defined if swapping textures on a universal base (Clothing)
+	TextureId: string?,      -- Fallback flat texture
+	MannequinType: string?,  -- "HangingFullBody" | "HangingLegs" | "HangingTorso"
+	ShirtTemplate: string?,  -- Specific Shirt asset ID
+	PantsTemplate: string?,  -- Specific Pants asset ID
 }
 
 local ShopConfig = {
@@ -90,7 +91,7 @@ local ShopConfig = {
 		} :: RarityData,
 	},
 
-	
+
 	Items = {
 		-- SHOES CATEGORY (Stored in ShoeMeshes folder)
 		["StreetwearHeel"] = {
@@ -99,14 +100,14 @@ local ShopConfig = {
 			Rarity = "Common",
 			MeshName = "StreetwearHeel"
 		} :: ItemProfile,
-		
+
 		["StreetwearSneaker"] = {
 			Theme = "Streetwear",
 			Category = "Shoes",
 			Rarity = "Common",
 			MeshName = "StreetwearSneaker"
 		} :: ItemProfile,
-		
+
 		["PreppyVans"] = {
 			Theme = "Preppy",
 			Category = "Shoes",
@@ -121,19 +122,22 @@ local ShopConfig = {
 			MeshName = "CyberSneaker"
 		} :: ItemProfile,
 
-		-- CLOTHING CATEGORY (Clones universal hanger base + slaps dynamic texture)
+		-- CLOTHING CATEGORY (Clones universal hanger base + wraps textures)
 		["StreetwearHoodie"] = {
 			Theme = "Streetwear",
 			Category = "Clothing",
 			Rarity = "Common",
-			TextureId = "rbxassetid://13406201389" -- Use actual template image assets here!
+			MannequinType = "HangingTorso",
+			ShirtTemplate = "rbxassetid://13406201389" -- Use actual template image assets here!
 		} :: ItemProfile,
 
 		["CyberpunkCoat"] = {
 			Theme = "Cyberpunk",
 			Category = "Clothing",
 			Rarity = "Rare",
-			TextureId = "rbxassetid://13406201633"
+			MannequinType = "HangingFullBody",
+			ShirtTemplate = "rbxassetid://5916676808",
+			PantsTemplate = "rbxassetid://18105944238"
 		} :: ItemProfile,
 
 		-- ACCESSORIES CATEGORY (Stored in AccessoryMeshes folder)
