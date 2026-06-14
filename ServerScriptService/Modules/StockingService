@@ -39,6 +39,14 @@ end
 
 -- Procedural visual asset builder that bypasses active physics checks
 local function SetupVisualPhysics(itemModel: Instance)
+	-- Ensure the root asset itself gets anchored and stripped of collision if it's a BasePart
+	if itemModel:IsA("BasePart") then
+		itemModel.Anchored = true
+		itemModel.CanCollide = false
+		itemModel.CanTouch = false
+		itemModel.CanQuery = false
+	end
+
 	for _, desc in ipairs(itemModel:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			desc.Anchored = true
@@ -221,15 +229,38 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 		local spawnedModel: Instance? = nil
 
 		if rackType == "Clothing" then
-			-- Clothing: Clones universal hanger base and glues texture template
+			-- Clothing: Clones designated mannequin base template and configures clothing instances
 			local baseFolder = shared:FindFirstChild("BaseModels")
-			local hangerTemplate = baseFolder and baseFolder:FindFirstChild("HangingTorso")
+			local mannequinType = itemConfig.MannequinType or "HangingTorso"
+			local hangerTemplate = baseFolder and baseFolder:FindFirstChild(mannequinType)
+
 			if hangerTemplate then
 				local hangerClone = hangerTemplate:Clone() :: Model
+
+				-- 1. Apply to real Roblox Shirt instance if it exists
+				local shirtInstance = hangerClone:FindFirstChildOfClass("Shirt")
+				if shirtInstance then
+					local targetShirt = itemConfig.ShirtTemplate or itemConfig.TextureId
+					if targetShirt then
+						shirtInstance.ShirtTemplate = targetShirt
+					end
+				end
+
+				-- 2. Apply to real Roblox Pants instance if it exists
+				local pantsInstance = hangerClone:FindFirstChildOfClass("Pants")
+				if pantsInstance then
+					local targetPants = itemConfig.PantsTemplate or itemConfig.TextureId
+					if targetPants then
+						pantsInstance.PantsTemplate = targetPants
+					end
+				end
+
+				-- 3. Fallback: Flat texture on raw part for basic hanger blocks
 				local torsoPart = hangerClone:FindFirstChild("Torso") or hangerClone:FindFirstChildOfClass("MeshPart")
-				if torsoPart and torsoPart:IsA("MeshPart") and itemConfig.TextureId then
+				if torsoPart and torsoPart:IsA("MeshPart") and not shirtInstance and itemConfig.TextureId then
 					torsoPart.TextureID = itemConfig.TextureId
 				end
+
 				spawnedModel = hangerClone
 			else
 				-- Safe visual fallback if BaseModels directory isn't setup inside studio
@@ -268,7 +299,8 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 		-- Snap visually to designated slot coordinates
 		local targetWorldCF = attachment.WorldCFrame
 
-		if rackType == "Shoes" and spawnedModel:IsA("Model") then
+		-- Allow both Models and BaseParts (like MeshParts) to form double-aligned pairs
+		if rackType == "Shoes" then
 			-- Spawn double-aligned shoe visual groupings with rotational offsets
 			local parentGroup = Instance.new("Model")
 			parentGroup.Name = rolledItemName
@@ -294,8 +326,19 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 		else
 			-- Standard snap translation for clothes and accessories
 			spawnedModel.Parent = displayFolder
+
+			-- Look for our pre-aligned hanger attachment
+			local modelAttachment = spawnedModel:FindFirstChild("HangerSnap", true) :: Attachment?
+
 			if spawnedModel:IsA("Model") then
-				spawnedModel:PivotTo(targetWorldCF)
+				if modelAttachment then
+					-- WYSIWYG Magic: Align the hanger's hook attachment directly to the rack's slot attachment
+					local targetCFrame = targetWorldCF * modelAttachment.CFrame:Inverse()
+					spawnedModel:PivotTo(targetCFrame)
+				else
+					-- Fallback if you forgot to add the attachment to a model
+					spawnedModel:PivotTo(targetWorldCF)
+				end
 			elseif spawnedModel:IsA("BasePart") then
 				spawnedModel.CFrame = targetWorldCF
 			end
@@ -309,26 +352,38 @@ end
 -- Attaches server-side event handlers directly to the injected ProximityPrompt
 local function BindStockingPrompt(rack: Model)
 	local prompt = rack:FindFirstChildOfClass("ProximityPrompt")
-	if prompt then return end
 
-	-- Generate basic interactive prompt inside model
-	local newPrompt = Instance.new("ProximityPrompt")
-	newPrompt.ObjectText = "Stock Shelf"
-	newPrompt.ActionText = "Place Merchandise"
-	newPrompt.HoldDuration = 0.2
-	newPrompt.KeyboardKeyCode = Enum.KeyCode.E
-	newPrompt.Enabled = false -- Server baseline is hidden by default
-	newPrompt.MaxActivationDistance = 12
-	newPrompt.Parent = rack
+	if not prompt then
+		-- Generate basic interactive prompt inside model if missing
+		prompt = Instance.new("ProximityPrompt")
+		prompt.ObjectText = "Stock Shelf"
+		prompt.ActionText = "Place Merchandise"
+		prompt.HoldDuration = 0.2
+		prompt.KeyboardKeyCode = Enum.KeyCode.E
+		prompt.Enabled = true
+		prompt.MaxActivationDistance = 12
+		prompt.Parent = rack
+	else
+		-- Configure pre-existing prompt so it is fully active and standardized
+		prompt.ObjectText = "Stock Shelf"
+		prompt.ActionText = "Place Merchandise"
+		prompt.Enabled = true
+	end
 
-	newPrompt.Triggered:Connect(function(player)
+	-- Always connect the triggered event, even if the prompt was pre-built in Studio!
+	prompt.Triggered:Connect(function(player)
 		local character = player.Character
 		local equippedTool = character and character:FindFirstChildOfClass("Tool")
-		if not equippedTool then return end
+		if not equippedTool then 
+			warn(`[Stocking Service]: Triggered by {player.Name}, but no equipped tool was found on their character model!`)
+			return 
+		end
 
 		local parsed = ShopConfig.ParseCrateName(equippedTool.Name)
 		if parsed then
 			ProcessStocking(player, rack, equippedTool, parsed)
+		else
+			warn(`[Stocking Service]: Triggered by {player.Name} with tool '{equippedTool.Name}', but couldn't parse its name!`)
 		end
 	end)
 end
