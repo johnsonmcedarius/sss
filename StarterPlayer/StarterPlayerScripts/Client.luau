@@ -8,7 +8,6 @@ local TweenS = game:GetService("TweenService")
 local modules = script.Parent.Modules
 local shared = RepS.Shared
 local events = RepS.Events
-
 local libraries = RepS.Libraries
 
 local Settings = require(shared.Settings)
@@ -19,8 +18,6 @@ local LemonSignal = require(libraries.LemonSignal)
 local ParamsBuilder = require(libraries.ParamsBuilder)
 
 local PlacingService = require(modules.PlacingService)
-
--- Integrate our newly built Shop, Carry Animation, and Stocking Controllers
 local ShopController = require(modules.ShopController)
 local CrateToolController = require(modules.CrateToolController)
 local StockingController = require(modules.StockingController)
@@ -29,7 +26,6 @@ local player: Player = Players.LocalPlayer
 local camera: Camera = workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
 
--- UI Core Configurations
 local coreGui: ScreenGui = playerGui:WaitForChild("CoreGui")
 local guiVisual: Folder = coreGui.Visual
 local toolbar: Frame = coreGui:WaitForChild("Toolbar")
@@ -39,7 +35,6 @@ local redoButton: ImageButton = toolbar:WaitForChild("Redo")
 local deleteButton: ImageButton = toolbar:WaitForChild("Delete")
 local gridButton: ImageButton = toolbar:WaitForChild("Grid")
 
--- Cancel Interface Integration
 local cancelFrame: Frame = coreGui:WaitForChild("CancelFrame")
 local cancelTextLabel: TextLabel = cancelFrame:FindFirstChildOfClass("TextLabel")
 local cancelTextButton: TextButton = cancelFrame:FindFirstChildOfClass("TextButton")
@@ -52,24 +47,18 @@ local previewHighlight: Highlight = guiVisual.PreviewHighlight
 local canPlaceColor: Color3 = Settings.CanPlaceColor
 local cannotPlaceColor: Color3 = Settings.CannotPlaceColor
 
-local previewTrove: Trove = Trove.new()
-local renderedEvent: Signal<Instance, number, boolean> = PlacingService.Rendered
+local previewTrove: Trove.Trove = Trove.new()
+local renderedEvent = PlacingService.Rendered
 
-type Trove = Trove.Trove
-type Signal<T...> = LemonSignal.Signal<T...>
-
--- State management for Placement
 local undoStack = {}
 local redoStack = {}
 local activeGridPrecision: number = Settings.GridUnit
 
--- Edit/Move State Management
 local isEditing = false
 local editingInstance: Instance? = nil
 local originalCF: CFrame? = nil
 local editingPlacementId: string? = nil
 
--- State management for Entry Flow (Plot Selection)
 local claimPlotGui = playerGui:WaitForChild("ClaimPlotGui")
 local mainButtonsGui = playerGui:WaitForChild("MainButtonsGui")
 
@@ -85,15 +74,12 @@ local cameraTrove = Trove.new()
 
 template.Parent = nil
 
--- Fixed Golden Coordinates for CancelFrame sliding (requires AnchorPoint 1, 0.5 in Studio)
 local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local onScreenPosition = UDim2.new(0.95, 0, 0.5, 0) -- 5% buffer from right edge
-local offScreenPosition = UDim2.new(1.3, 0, 0.5, 0) -- Hidden completely off-screen
+local onScreenPosition = UDim2.new(0.95, 0, 0.5, 0)
+local offScreenPosition = UDim2.new(1.3, 0, 0.5, 0)
 
--- Declarations
 local EnterEditMode
 
--- Returns the physical floor/base of the player's claimed plot
 local function GetPlayerPlotBase(): BasePart?
 	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
 	if not claimedPlotName then return nil end
@@ -108,7 +94,6 @@ local function GetPlayerPlotBase(): BasePart?
 	return nil
 end
 
--- Dynamic visual state driver for GridTexture scaling using transparency
 local function UpdateGridTextureVisuals(forceDisable: boolean?)
 	local base = GetPlayerPlotBase()
 	if not base then return end
@@ -116,9 +101,8 @@ local function UpdateGridTextureVisuals(forceDisable: boolean?)
 	local gridTexture = base:FindFirstChild("GridTexture")
 	if gridTexture and gridTexture:IsA("Texture") then
 		if forceDisable then
-			gridTexture.Transparency = 1 -- 100% transparent (hidden)
+			gridTexture.Transparency = 1
 		else
-			-- Show grid with subtle styling only when objects menu (build mode) is visible
 			gridTexture.Transparency = if objects.Visible then 0.5 else 1
 			gridTexture.StudsPerTileU = activeGridPrecision
 			gridTexture.StudsPerTileV = activeGridPrecision
@@ -135,7 +119,6 @@ local function SlideCancelFrame(show: boolean, itemName: string?)
 	end
 end
 
--- Safely resets any active placing, deleting, or editing flows
 local function CancelActiveSession()
 	if isEditing and editingInstance and originalCF then
 		editingInstance.Parent = workspace.Objects
@@ -168,12 +151,7 @@ local function FocusCameraOnPlot(plot: Instance)
 	cameraTrove:Clean()
 	camera.CameraType = Enum.CameraType.Scriptable
 
-	local centerCF: CFrame
-	if plot:IsA("Model") then
-		centerCF = plot:GetPivot()
-	else
-		centerCF = plot.CFrame
-	end
+	local centerCF: CFrame = if plot:IsA("Model") then plot:GetPivot() else (plot:IsA("BasePart") and plot.CFrame or CFrame.identity)
 
 	cameraTrove:BindToRenderStep("CameraPan", Enum.RenderPriority.Camera.Value, function()
 		local targetCameraCF = centerCF * CFrame.new(0, 45, 65) * CFrame.Angles(math.rad(-33), 0, 0)
@@ -203,22 +181,14 @@ local function UpdateSelectionVisuals()
 end
 
 local function CycleGridPrecision()
-	if activeGridPrecision == 1 then
-		activeGridPrecision = 2
-	elseif activeGridPrecision == 2 then
-		activeGridPrecision = 4
-	else
-		activeGridPrecision = 1
-	end
+	if activeGridPrecision == 1 then activeGridPrecision = 2
+	elseif activeGridPrecision == 2 then activeGridPrecision = 4
+	else activeGridPrecision = 1 end
 
 	PlacingService.GridUnit = activeGridPrecision
 
 	local targetIcon: string? = Settings.GridIcons[activeGridPrecision]
-	if targetIcon then
-		gridButton.Image = targetIcon
-	end
-
-	-- Refresh grid texture size instantly on the floor
+	if targetIcon then gridButton.Image = targetIcon end
 	UpdateGridTextureVisuals()
 end
 
@@ -227,12 +197,13 @@ local function UpdateHistoryUI()
 	redoButton.ImageTransparency = if #redoStack > 0 then 0 else 0.5
 end
 
-local function PushAction(actionType: "Place" | "Delete", objectName: string, cf: CFrame, placementId: string)
+local function PushAction(actionType: "Place" | "Delete" | "Move", objectName: string, cf: CFrame, placementId: string, previousCF: CFrame?)
 	table.insert(undoStack, {
 		Type = actionType,
 		ObjectName = objectName,
 		CF = cf,
-		PlacementId = placementId
+		PlacementId = placementId,
+		PreviousCF = previousCF
 	})
 	table.clear(redoStack)
 	UpdateHistoryUI()
@@ -240,7 +211,6 @@ end
 
 local function GetTargetObject(targetInstance: Instance?): Instance?
 	if not targetInstance then return nil end
-
 	if targetInstance:IsDescendantOf(workspace.Objects) then
 		local current = targetInstance
 		while current and current.Parent ~= workspace.Objects do
@@ -248,7 +218,6 @@ local function GetTargetObject(targetInstance: Instance?): Instance?
 		end
 		return current
 	end
-
 	return nil
 end
 
@@ -268,8 +237,8 @@ local function SetupViewportPreview(viewport: ViewportFrame, originalObject: Ins
 	end
 
 	previewObject.Parent = viewport
-	local camera = Instance.new("Camera")
-	camera.FieldOfView = 45
+	local cameraInstance = Instance.new("Camera")
+	cameraInstance.FieldOfView = 45
 
 	local center: CFrame
 	local size: Vector3
@@ -282,16 +251,15 @@ local function SetupViewportPreview(viewport: ViewportFrame, originalObject: Ins
 	end
 
 	local maxDim: number = math.max(size.X, size.Y, size.Z)
-	local distance: number = maxDim / (2 * math.tan(math.rad(camera.FieldOfView / 2))) * 1.4
+	local distance: number = maxDim / (2 * math.tan(math.rad(cameraInstance.FieldOfView / 2))) * 1.4
 
 	local cameraOffset = Vector3.new(1.1, 0.8, 1.1).Unit * distance
-	camera.CFrame = CFrame.new(center.Position + cameraOffset, center.Position)
+	cameraInstance.CFrame = CFrame.new(center.Position + cameraOffset, center.Position)
 
-	viewport.CurrentCamera = camera
-	camera.Parent = viewport
+	viewport.CurrentCamera = cameraInstance
+	cameraInstance.Parent = viewport
 end
 
--- Neutral selection state handling edit/hover checks
 function EnterEditMode()
 	CancelActiveSession()
 	UpdateGridTextureVisuals()
@@ -347,8 +315,6 @@ function EnterEditMode()
 					PlacingService.GridUnit = activeGridPrecision
 					PlacingService.SetPreview(asset)
 					SlideCancelFrame(true, "Moving: " .. objectName)
-
-					-- Ensure grid texture updates dynamically when moving items
 					UpdateGridTextureVisuals()
 
 					local editTrove = Trove.new()
@@ -375,18 +341,22 @@ function EnterEditMode()
 							if not canPlace then return end
 
 							if editingInstance then
-								events.Remotes.Delete:FireServer({ Object = editingInstance })
-								editingInstance:Destroy()
+								editingInstance.Parent = workspace.Objects
+								editingInstance:PivotTo(CF)
+								events.Remotes.Move:FireServer({
+									Object = editingInstance,
+									CF = CF
+								})
+								PushAction("Move", objectName, CF, editingPlacementId, originalCF)
+							else
+								local newPlacementId = editingPlacementId or HttpService:GenerateGUID(false)
+								events.Remotes.Place:FireServer({
+									ObjectName = objectName,
+									CF = CF,
+									PlacementId = newPlacementId
+								})
+								PushAction("Place", objectName, CF, newPlacementId)
 							end
-
-							local newPlacementId = editingPlacementId or HttpService:GenerateGUID(false)
-							events.Remotes.Place:FireServer({
-								ObjectName = objectName,
-								CF = CF,
-								PlacementId = newPlacementId
-							})
-
-							PushAction("Place", objectName, CF, newPlacementId)
 
 							isEditing = false
 							editingInstance = nil
@@ -478,7 +448,6 @@ local function EnterDeleteMode()
 	end)
 end
 
--- Render elements in catalog menu
 for _, object: Instance in shared.Assets:GetChildren() do
 	assert(object:IsA("BasePart") or object:IsA("Model"), `{object} is not a valid object`)
 
@@ -563,7 +532,6 @@ for _, object: Instance in shared.Assets:GetChildren() do
 	end)
 end
 
--- Build button logic toggle
 if buildButton then
 	buildButton.MouseButton1Click:Connect(function()
 		local nextVisibility = not objects.Visible
@@ -574,12 +542,11 @@ if buildButton then
 			EnterEditMode()
 		else
 			CancelActiveSession()
-			UpdateGridTextureVisuals(true) -- Force fade out the grid on close
+			UpdateGridTextureVisuals(true)
 		end
 	end)
 end
 
--- Core UI cancel click binder
 cancelTextButton.MouseButton1Click:Connect(function()
 	CancelActiveSession()
 	EnterEditMode()
@@ -606,11 +573,35 @@ undoButton.MouseButton1Click:Connect(function()
 		end
 		if targetItem then events.Remotes.Delete:FireServer({ Object = targetItem }) end
 	elseif action.Type == "Delete" then
-		events.Remotes.Place:FireServer({
-			ObjectName = action.ObjectName,
-			CF = action.CF,
-			PlacementId = action.PlacementId
-		})
+		local restoreRemote = events.Remotes:FindFirstChild("Restore")
+		if restoreRemote then
+			restoreRemote:FireServer({
+				ObjectName = action.ObjectName,
+				CF = action.CF,
+				PlacementId = action.PlacementId
+			})
+		else
+			events.Remotes.Place:FireServer({
+				ObjectName = action.ObjectName,
+				CF = action.CF,
+				PlacementId = action.PlacementId
+			})
+		end
+	elseif action.Type == "Move" then
+		local targetItem: Instance? = nil
+		for _, child in workspace.Objects:GetChildren() do
+			if child:GetAttribute("PlacementId") == action.PlacementId then
+				targetItem = child
+				break
+			end
+		end
+		if targetItem and action.PreviousCF then
+			targetItem:PivotTo(action.PreviousCF)
+			events.Remotes.Move:FireServer({
+				Object = targetItem,
+				CF = action.PreviousCF
+			})
+		end
 	end
 	table.insert(redoStack, action)
 	UpdateHistoryUI()
@@ -620,11 +611,20 @@ redoButton.MouseButton1Click:Connect(function()
 	if #redoStack == 0 then return end
 	local action = table.remove(redoStack)
 	if action.Type == "Place" then
-		events.Remotes.Place:FireServer({
-			ObjectName = action.ObjectName,
-			CF = action.CF,
-			PlacementId = action.PlacementId
-		})
+		local restoreRemote = events.Remotes:FindFirstChild("Restore")
+		if restoreRemote then
+			restoreRemote:FireServer({
+				ObjectName = action.ObjectName,
+				CF = action.CF,
+				PlacementId = action.PlacementId
+			})
+		else
+			events.Remotes.Place:FireServer({
+				ObjectName = action.ObjectName,
+				CF = action.CF,
+				PlacementId = action.PlacementId
+			})
+		end
 	elseif action.Type == "Delete" then
 		local targetItem: Instance? = nil
 		for _, child in workspace.Objects:GetChildren() do
@@ -634,12 +634,26 @@ redoButton.MouseButton1Click:Connect(function()
 			end
 		end
 		if targetItem then events.Remotes.Delete:FireServer({ Object = targetItem }) end
+	elseif action.Type == "Move" then
+		local targetItem: Instance? = nil
+		for _, child in workspace.Objects:GetChildren() do
+			if child:GetAttribute("PlacementId") == action.PlacementId then
+				targetItem = child
+				break
+			end
+		end
+		if targetItem then
+			targetItem:PivotTo(action.CF)
+			events.Remotes.Move:FireServer({
+				Object = targetItem,
+				CF = action.CF
+			})
+		end
 	end
 	table.insert(undoStack, action)
 	UpdateHistoryUI()
 end)
 
--- Keyboard inputs
 UserInputS.InputBegan:Connect(function(inputObject: InputObject, gameProcessedEvent: boolean)
 	if gameProcessedEvent then return end
 	if inputObject.KeyCode == Settings.GridCycleKey then
@@ -682,7 +696,7 @@ player:GetAttributeChangedSignal("ClaimedPlot"):Connect(function()
 		if objects.Visible then
 			EnterEditMode()
 		else
-			UpdateGridTextureVisuals(true) -- Hide grid texture on initial spawn
+			UpdateGridTextureVisuals(true)
 		end
 	end
 end)
@@ -735,9 +749,6 @@ do
 	if char then OnCharacterAdded(char) end
 end
 
-local StockingController = require(modules.StockingController)
-
--- Initialize Shop and Crate Tool controllers on startup
 ShopController.Initialize()
 CrateToolController.Initialize()
 StockingController.Initialize()
