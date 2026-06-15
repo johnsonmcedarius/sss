@@ -1,11 +1,13 @@
 local RepS = game:GetService("ReplicatedStorage")
 local HttpS = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local ServerScriptS = game:GetService("ServerScriptService")
 
 local shared = RepS.Shared
 local modules = shared.Modules
 
 local ShopConfig = require(modules.ShopConfig)
+local DatabaseService = require(script.Parent:WaitForChild("DatabaseService"))
 
 type CrateRegistryEntry = {
 	ToolInstance: Tool,
@@ -26,19 +28,15 @@ local ShopService = {
 	Registry = {} :: { [string]: CrateRegistryEntry },
 	AvailableThemes = {} :: { string },
 
-	-- Organized lookup cache to ensure rolled items always exist physically
 	ThemeRarityMap = {} :: { [string]: { [string]: { string } } },
 
-	-- Active server stock state
 	CurrentStock = {} :: { [string]: ActiveStockItem },
 	CurrentToken = "" :: string,
 	ExpirationTime = 0 :: number,
 
-	-- Lifecycle state
 	_Initialized = false,
 }
 
--- Safe dynamic generator for network remotes
 local function GetRemote(name: string, className: "RemoteEvent" | "UnreliableRemoteEvent"): any
 	local eventsFolder = RepS:FindFirstChild("Events")
 	if not eventsFolder then
@@ -67,7 +65,6 @@ local function GetRemote(name: string, className: "RemoteEvent" | "UnreliableRem
 	return targetRemote
 end
 
--- Broadcasts the active stock mapping to all connected clients
 local function BroadcastStockUpdate()
 	local compressedPayload = {
 		Expiration = ShopService.ExpirationTime,
@@ -88,12 +85,10 @@ local function BroadcastStockUpdate()
 	stockUpdatedRemote:FireAllClients(compressedPayload)
 end
 
--- Safely retrieves a registered asset schema by name
 function ShopService.GetCrateData(crateName: string): CrateRegistryEntry?
 	return ShopService.Registry[crateName]
 end
 
--- Compiles dynamic item lists and theme mappings from ReplicatedStorage
 function ShopService.Initialize()
 	local cratesFolder: Folder? = RepS.Shared:FindFirstChild("Crates") :: Folder?
 	if not cratesFolder then
@@ -105,7 +100,6 @@ function ShopService.Initialize()
 	table.clear(ShopService.AvailableThemes)
 	table.clear(ShopService.ThemeRarityMap)
 
-	-- Discover theme directories
 	for _, themeFolder in ipairs(cratesFolder:GetChildren()) do
 		if not themeFolder:IsA("Folder") then continue end
 
@@ -122,7 +116,6 @@ function ShopService.Initialize()
 			Legendary = {},
 		}
 
-		-- Dissect individual tools inside the style folder
 		for _, toolAsset in ipairs(themeFolder:GetChildren()) do
 			if not toolAsset:IsA("Tool") then continue end
 
@@ -130,7 +123,6 @@ function ShopService.Initialize()
 			if parsedData then
 				local rarityConfig = ShopConfig.Rarities[parsedData.Rarity]
 
-				-- Register master configuration entry
 				ShopService.Registry[parsedData.Name] = {
 					ToolInstance = toolAsset,
 					Style = parsedData.Style,
@@ -138,53 +130,34 @@ function ShopService.Initialize()
 					Settings = rarityConfig,
 				}
 
-				-- Cache layout for the random stock algorithm
 				table.insert(ShopService.ThemeRarityMap[themeName][parsedData.Rarity], parsedData.Name)
 			end
 		end
 	end
 
-	local registeredCount = 0
-	for _ in pairs(ShopService.Registry) do
-		registeredCount += 1
-	end
-
-	print("=========================================================")
-	print(`[ShopService INITIALIZED] Successfully parsed registry!`)
-	print(` -> Discovered Themes: {table.concat(ShopService.AvailableThemes, ", ")}`)
-	print(` -> Total Crate Tools Cached: {registeredCount}`)
-	print("=========================================================")
-
 	ShopService._Initialized = true
 
-	-- Run our first stock roll on startup and start listeners
 	ShopService.UpdateMarketStock()
 	ShopService.StartStockLoop()
 	ShopService.ConnectNetworkHandlers()
 end
 
--- Executes the multi-slot cumulative probability algorithms to restock the shop
 function ShopService.UpdateMarketStock()
 	if not ShopService._Initialized then return end
 
 	table.clear(ShopService.CurrentStock)
 
-	-- Dynamic slot allocation reads our max slots on the fly!
 	local slotLimit: number = ShopConfig.MAX_SHOP_SLOTS
 	local stockToken: string = HttpS:GenerateGUID(false)
 
-	-- Calculate exact synchronized 5-minute block boundaries
 	local now: number = workspace:GetServerTimeNow()
 	local nextExpiration: number = now + (300 - (now % 300))
 
-	-- Populate slots
 	for slotIndex = 1, slotLimit do
 		if #ShopService.AvailableThemes == 0 then break end
 
-		-- Roll 1: Style Theme
 		local rolledTheme: string = ShopService.AvailableThemes[math.random(1, #ShopService.AvailableThemes)]
 
-		-- Roll 2: Weighted Rarity selection
 		local rarityRoll: number = math.random(1, 100)
 		local selectedRarity: string = "Common"
 		local cumulativeWeight = 0
@@ -197,10 +170,8 @@ function ShopService.UpdateMarketStock()
 			end
 		end
 
-		-- Verify we actually have a tool for this theme/rarity combo
 		local availableTools: { string } = ShopService.ThemeRarityMap[rolledTheme][selectedRarity]
 
-		-- Fallback Routine: If no items exist for this exact rarity, cascade down to any valid item in this theme
 		if #availableTools == 0 then
 			for _, fallbackRarity in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary"}) do
 				if #ShopService.ThemeRarityMap[rolledTheme][fallbackRarity] > 0 then
@@ -211,7 +182,6 @@ function ShopService.UpdateMarketStock()
 			end
 		end
 
-		-- If we still don't have any items, fallback to all registry elements
 		if #availableTools == 0 then
 			local keys = {}
 			for key, val in pairs(ShopService.Registry) do
@@ -222,17 +192,14 @@ function ShopService.UpdateMarketStock()
 			availableTools = keys
 		end
 
-		-- Select a random item from our resolved pool
 		if #availableTools > 0 then
 			local selectedCrateName: string = availableTools[math.random(1, #availableTools)]
 			local registryData = ShopService.Registry[selectedCrateName]
 			local raritySettings = registryData.Settings
 
-			-- Roll 3: Stock Quantity based strictly on allowed tier range
 			local stockCapacity: number = math.random(raritySettings.MinStock, raritySettings.MaxStock)
 			local itemCost: number = raritySettings.BaseCost
 
-			-- Ensure we don't duplicate a crate into multiple slots in the same cycle
 			if not ShopService.CurrentStock[selectedCrateName] then
 				ShopService.CurrentStock[selectedCrateName] = {
 					Name = selectedCrateName,
@@ -242,26 +209,17 @@ function ShopService.UpdateMarketStock()
 					Style = rolledTheme,
 				}
 			else
-				-- If it rolled the same item, just accumulate or extend the stock count
 				ShopService.CurrentStock[selectedCrateName].Stock += stockCapacity
 			end
 		end
 	end
 
-	-- Lock down authoritative server state variables
 	ShopService.CurrentToken = stockToken
 	ShopService.ExpirationTime = nextExpiration
 
 	BroadcastStockUpdate()
-
-	print(`[ShopService]: Shop successfully restocked for cycle {stockToken}!`)
-	print(` -> Next rollover in: {math.round(nextExpiration - now)} seconds`)
-	for crate, details in pairs(ShopService.CurrentStock) do
-		print(`   * {crate} -> Stock: {details.Stock} | Cost: {details.Price}`)
-	end
 end
 
--- High-precision background loop to trigger periodic stock rollovers
 function ShopService.StartStockLoop()
 	task.spawn(function()
 		local lastInterval = math.floor(workspace:GetServerTimeNow() / 300)
@@ -270,7 +228,6 @@ function ShopService.StartStockLoop()
 			task.wait(1)
 			local currentInterval = math.floor(workspace:GetServerTimeNow() / 300)
 
-			-- If the interval has rolled over to the next 5-minute block, execute the restock
 			if currentInterval ~= lastInterval then
 				lastInterval = currentInterval
 				local success, err = pcall(function()
@@ -283,11 +240,10 @@ function ShopService.StartStockLoop()
 		end
 	end)
 
-	-- Sync newly joining players with the current stock state
 	Players.PlayerAdded:Connect(function(player)
 		if ShopService.CurrentToken ~= "" then
 			task.spawn(function()
-				task.wait(2) -- Let scripts load
+				task.wait(2)
 
 				local compressedPayload = {
 					Expiration = ShopService.ExpirationTime,
@@ -317,7 +273,6 @@ function ShopService.ConnectNetworkHandlers()
 	local purchaseResponse = GetRemote("PurchaseResponse", "RemoteEvent") :: RemoteEvent
 
 	purchaseRequest.OnServerEvent:Connect(function(player: Player, requestedCrate: any)
-		-- Security Step 0: Type check parameter validation
 		if typeof(requestedCrate) ~= "string" then
 			warn(`[ShopService Security]: Rejected malformed checkout request from {player.Name}`)
 			purchaseResponse:FireClient(player, false, "Invalid request payload.")
@@ -327,13 +282,11 @@ function ShopService.ConnectNetworkHandlers()
 		local character = player.Character
 		local hrp = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
 
-		-- Security Step 1: Distance-Sanity Verification
 		if not hrp then
 			purchaseResponse:FireClient(player, false, "Character state unresolved.")
 			return
 		end
 
-		-- Search for physical store counter boundaries
 		local shopCounter = workspace:FindFirstChild("ShopCounter") or workspace:FindFirstChild("Register")
 		if shopCounter and shopCounter:IsA("BasePart") then
 			local distance = (hrp.Position - shopCounter.Position).Magnitude
@@ -342,12 +295,8 @@ function ShopService.ConnectNetworkHandlers()
 				purchaseResponse:FireClient(player, false, "Too far away from the cash register.")
 				return
 			end
-		else
-			-- If you haven't placed the physical counter in studio yet, we print a polite warning so we don't block tests
-			warn("[ShopService]: Warning - Could not locate a physical part named 'ShopCounter' or 'Register' in workspace. Bypassing distance-sanity checks for testing.")
 		end
 
-		-- Security Step 2: Validate active stock and token presence
 		local stockDetails = ShopService.CurrentStock[requestedCrate]
 		if not stockDetails then
 			purchaseResponse:FireClient(player, false, "Item is not currently in stock.")
@@ -359,31 +308,42 @@ function ShopService.ConnectNetworkHandlers()
 			return
 		end
 
-		-- Check if the actual physical asset template exists
 		local registryData = ShopService.Registry[requestedCrate]
 		if not registryData then
 			purchaseResponse:FireClient(player, false, "Crate asset registration mismatch.")
 			return
 		end
 
-		-- Security Step 3: Mutate State safely
-		stockDetails.Stock -= 1
+		-- ====================================================================
+		-- AUTHORITATIVE DATABASE INTEGRATION: SECURE WALLET DEDUCTION
+		-- ====================================================================
+		-- Check and adjust player coins authoritatively through safe server mutators
+		local price = stockDetails.Price
+		local purchaseSuccess = DatabaseService.AdjustCoins(player, -price)
 
-		-- Provision the backpack tool securely on the server
-		local backpack = player:FindFirstChildOfClass("Backpack")
-		if backpack then
-			local toolClone = registryData.ToolInstance:Clone()
-			-- Force lock dropped state to prevent physics exploits
-			toolClone.CanBeDropped = false
-			toolClone.Parent = backpack
-
-			print(`[ShopService]: Provisioned {requestedCrate} into {player.Name}'s inventory.`)
-		else
-			purchaseResponse:FireClient(player, false, "Backpack inventory could not be resolved.")
+		if not purchaseSuccess then
+			purchaseResponse:FireClient(player, false, "Insufficient funds in your account!")
 			return
 		end
 
-		-- Security Step 4: Fire async confirmations and update network channels
+		-- Mutate physical stock count
+		stockDetails.Stock -= 1
+
+		-- Provision backpack tool securely
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		if backpack then
+			local toolClone = registryData.ToolInstance:Clone()
+			toolClone.CanBeDropped = false
+			toolClone.Parent = backpack
+
+			print(`[ShopService]: {player.Name} spent {price} coins and unlocked {requestedCrate}.`)
+		else
+			-- Transaction refund fallback if backpack was destroyed mid-route
+			DatabaseService.AdjustCoins(player, price)
+			purchaseResponse:FireClient(player, false, "Backpack inventory could not be resolved. Refunded.")
+			return
+		end
+
 		purchaseResponse:FireClient(player, true)
 		BroadcastStockUpdate()
 	end)
