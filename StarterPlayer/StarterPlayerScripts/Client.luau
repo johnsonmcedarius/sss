@@ -17,10 +17,12 @@ local Trove = require(libraries.Trove)
 local LemonSignal = require(libraries.LemonSignal)
 local ParamsBuilder = require(libraries.ParamsBuilder)
 
+-- Controllers & Services
 local PlacingService = require(modules.PlacingService)
 local ShopController = require(modules.ShopController)
 local CrateToolController = require(modules.CrateToolController)
 local StockingController = require(modules.StockingController)
+local EconomyViewController = require(modules.EconomyViewController)
 
 local player: Player = Players.LocalPlayer
 local camera: Camera = workspace.CurrentCamera
@@ -735,6 +737,15 @@ end
 for _, child in workspace:GetChildren() do BindPlotListener(child) end
 workspace.ChildAdded:Connect(BindPlotListener)
 
+-- Initialize Local Systems (Core Client Bootstrapper Sequence)
+--PlacingService:Initialize()
+CrateToolController.Initialize()
+ShopController.Initialize()
+StockingController.Initialize()
+EconomyViewController.Initialize()
+
+print("[Client]: All client controllers and UI synced systems successfully loaded.")
+
 task.spawn(InitializeEntryFlow)
 
 do
@@ -748,7 +759,3 @@ do
 	local char: Model? = player.Character
 	if char then OnCharacterAdded(char) end
 end
-
-ShopController.Initialize()
-CrateToolController.Initialize()
-StockingController.Initialize()
