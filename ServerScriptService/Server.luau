@@ -5,7 +5,6 @@ local ServerScriptS = game:GetService("ServerScriptService")
 
 local shared = RepS.Shared
 local events = RepS.Events
-
 local Validation = require(shared.Modules.Validation)
 
 -- Locate and initialize our database and server modules
@@ -25,8 +24,9 @@ local deletedObjectsCache = {}
 
 local function GetPlayerPlotBase(player: Player): BasePart?
 	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
-	if not claimedPlotName then return nil end
-
+	if not claimedPlotName then
+		return nil
+	end
 	local plotModel: Instance? = workspace:FindFirstChild(claimedPlotName)
 	if plotModel then
 		local base: Instance? = plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part")
@@ -39,28 +39,31 @@ end
 
 local function SpawnPlayerSavedLayout(player: Player, plotModel: Instance)
 	local plotBase = plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part")
-	if not plotBase or not plotBase:IsA("BasePart") then return end
+	if not plotBase or not plotBase:IsA("BasePart") then
+		return
+	end
 
 	local sessionTrove = DatabaseService.GetTrove(player)
-	if not sessionTrove then return end
+	if not sessionTrove then
+		return
+	end
 
 	local savedLayout = DatabaseService.GetAndValidatePlacedObjects(player, plotBase)
 	local assetsFolder = shared:FindFirstChild("Assets")
-	if not assetsFolder then return end
+	if not assetsFolder then
+		return
+	end
 
 	for placementId, objectData in pairs(savedLayout) do
 		local assetTemplate = assetsFolder:FindFirstChild(objectData.ObjectName)
 		if assetTemplate then
 			local spawnedClone = assetTemplate:Clone()
 			spawnedClone:PivotTo(objectData.CF)
-
 			spawnedClone:SetAttribute("PlacementId", placementId)
 			spawnedClone:SetAttribute("PlacedBy", player.UserId)
-
 			if spawnedClone:GetAttribute("OccupiedSlots") == nil then
 				spawnedClone:SetAttribute("OccupiedSlots", 0)
 			end
-
 			spawnedClone.Parent = workspace.Objects
 			sessionTrove:Add(spawnedClone)
 		end
@@ -69,7 +72,9 @@ end
 
 -- Rebuilds display items for restored clothing and shoe racks from historical snapshots
 local function RebuildRestoredStock(rack: Model, stockData: table, player: Player)
-	if not stockData or #stockData == 0 then return end
+	if not stockData or #stockData == 0 then
+		return
+	end
 
 	local displayFolder = rack:FindFirstChild("DisplayItems")
 	if not displayFolder then
@@ -83,7 +88,9 @@ local function RebuildRestoredStock(rack: Model, stockData: table, player: Playe
 
 	for _, itemInfo in ipairs(stockData) do
 		local attachment = rack:FindFirstChild(itemInfo.AttachmentName, true)
-		if not attachment or not attachment:IsA("Attachment") then continue end
+		if not attachment or not attachment:IsA("Attachment") then
+			continue
+		end
 
 		local targetWorldCF = attachment.WorldCFrame
 		local spawnedModel = nil
@@ -92,7 +99,6 @@ local function RebuildRestoredStock(rack: Model, stockData: table, player: Playe
 			local baseFolder = shared:FindFirstChild("BaseModels")
 			local mannequinType = itemInfo.MannequinType or "HangingTorso"
 			local hangerTemplate = baseFolder and baseFolder:FindFirstChild(mannequinType)
-
 			if hangerTemplate then
 				local hangerClone = hangerTemplate:Clone()
 				local shirtInstance = hangerClone:FindFirstChildOfClass("Shirt")
@@ -112,14 +118,17 @@ local function RebuildRestoredStock(rack: Model, stockData: table, player: Playe
 		else
 			local merchandiseFolder = shared:FindFirstChild("Merchandise")
 			local meshesFolder = merchandiseFolder and (if rackType == "Shoes" then merchandiseFolder:FindFirstChild("ShoeMeshes") else merchandiseFolder:FindFirstChild("AccessoryMeshes"))
-
 			if meshesFolder then
 				local assetTemplate = meshesFolder:FindFirstChild(itemInfo.MeshName or "")
-				if assetTemplate then spawnedModel = assetTemplate:Clone() end
+				if assetTemplate then
+					spawnedModel = assetTemplate:Clone()
+				end
 			end
 		end
 
-		if not spawnedModel then continue end
+		if not spawnedModel then
+			continue
+		end
 
 		-- Setup physics securely
 		if spawnedModel:IsA("BasePart") then
@@ -158,7 +167,10 @@ local function RebuildRestoredStock(rack: Model, stockData: table, player: Playe
 
 			parentGroup:SetAttribute("SlotPrice", itemInfo.SlotPrice)
 			parentGroup:SetAttribute("ItemName", itemInfo.ItemName)
-			if sessionTrove then sessionTrove:Add(parentGroup) end
+
+			if sessionTrove then
+				sessionTrove:Add(parentGroup)
+			end
 		else
 			spawnedModel.Parent = displayFolder
 			local modelAttachment = spawnedModel:FindFirstChild("HangerSnap", true)
@@ -171,7 +183,9 @@ local function RebuildRestoredStock(rack: Model, stockData: table, player: Playe
 			else
 				spawnedModel.CFrame = targetWorldCF
 			end
-			if sessionTrove then sessionTrove:Add(spawnedModel) end
+			if sessionTrove then
+				sessionTrove:Add(spawnedModel)
+			end
 		end
 	end
 end
@@ -185,10 +199,14 @@ events.Remotes.ClaimPlot.OnServerEvent:Connect(function(player: Player, argument
 	assert(plot, `{plotName} does not exist`)
 
 	local existingOwner = plot:GetAttribute("Owner")
-	if existingOwner then return end
+	if existingOwner then
+		return
+	end
 
 	for _, p in workspace:GetChildren() do
-		if string.find(p.Name, "^Plot%d+$") and p:GetAttribute("Owner") == player.UserId then return end
+		if string.find(p.Name, "^Plot%d+$") and p:GetAttribute("Owner") == player.UserId then
+			return
+		end
 	end
 
 	plot:SetAttribute("Owner", player.UserId)
@@ -217,7 +235,9 @@ events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: {
 	assert(typeof(placementId) == "string", `"PlacementId" was not specified`)
 
 	local claimedPlot = player:GetAttribute("ClaimedPlot")
-	if not claimedPlot then return end
+	if not claimedPlot then
+		return
+	end
 
 	local object: Instance? = shared.Assets:FindFirstChild(objectName)
 	assert(object, `{objectName} clear layout miss`)
@@ -243,10 +263,12 @@ events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: {
 	newObject.Parent = workspace.Objects
 
 	local sessionTrove = DatabaseService.GetTrove(player)
-	if sessionTrove then sessionTrove:Add(newObject) end
+	if sessionTrove then
+		sessionTrove:Add(newObject)
+	end
 end)
 
--- Secure trash handler (UPGRADED: Serializes active shelf item details into cache snapshot)
+-- Secure trash handler (UPGRADED: Fixed memory leak by explicit owner verification mapping)
 events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local targetObject: Instance? = arguments.Object
 	local fallbackPlacementId: string? = arguments.PlacementId
@@ -263,7 +285,9 @@ events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: 
 	assert(targetObject, `"Object" layout query missing alignment reference`)
 
 	if targetObject and targetObject.Parent == workspace.Objects then
-		if targetObject:GetAttribute("PlacedBy") ~= player.UserId then return end
+		if targetObject:GetAttribute("PlacedBy") ~= player.UserId then
+			return
+		end
 
 		local placementId = targetObject:GetAttribute("PlacementId")
 		if placementId then
@@ -278,8 +302,9 @@ events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: 
 				local index = 0
 				for _, child in ipairs(displayFolder:GetChildren()) do
 					index += 1
-					if index > maxSlots then break end
-
+					if index > maxSlots then
+						break
+					end
 					local itemConfig = shared.Modules.ShopConfig and require(shared.Modules.ShopConfig).Items[child:GetAttribute("ItemName")]
 					table.insert(serializedStock, {
 						AttachmentName = `Slot{index}`,
@@ -289,23 +314,25 @@ events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: 
 						MannequinType = itemConfig and itemConfig.MannequinType,
 						ShirtTemplate = itemConfig and itemConfig.ShirtTemplate,
 						PantsTemplate = itemConfig and itemConfig.PantsTemplate,
-						TextureId = itemConfig and itemConfig.TextureId
+						TextureId = itemConfig and itemConfig.TextureId,
 					})
 				end
 			end
 
-			-- Stash everything inside layout tracking maps
+			-- Stash inside layout tracks safely bound to Owner to prevent server memory bloat
 			deletedObjectsCache[placementId] = {
 				Instance = targetObject,
 				StockData = serializedStock,
-				OccupiedSlots = targetObject:GetAttribute("OccupiedSlots") or 0
+				OccupiedSlots = targetObject:GetAttribute("OccupiedSlots") or 0,
+				OwnerId = player.UserId, -- Added explicit owner tracking tag
 			}
+
+			local sessionTrove = DatabaseService.GetTrove(player)
+			if sessionTrove then
+				sessionTrove:Remove(targetObject)
+			end
+			targetObject.Parent = nil
 		end
-
-		local sessionTrove = DatabaseService.GetTrove(player)
-		if sessionTrove then sessionTrove:Remove(targetObject) end
-
-		targetObject.Parent = nil
 	end
 end)
 
@@ -321,8 +348,8 @@ events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments:
 
 	local cacheEntry = deletedObjectsCache[placementId]
 	local plotBase = GetPlayerPlotBase(player)
-
 	local canReuseCache = false
+
 	if cacheEntry and cacheEntry.Instance and cacheEntry.Instance.Parent == nil then
 		local success = pcall(function()
 			cacheEntry.Instance.Parent = workspace.Temp
@@ -333,26 +360,31 @@ events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments:
 
 	if canReuseCache and cacheEntry then
 		local object = cacheEntry.Instance
-		if object:GetAttribute("PlacedBy") ~= player.UserId then return end
-
+		if object:GetAttribute("PlacedBy") ~= player.UserId then
+			return
+		end
 		object:PivotTo(cf)
-		if not Validation.HasValidPlacement(object, plotBase) then return end
+		if not Validation.HasValidPlacement(object, plotBase) then
+			return
+		end
 
 		DatabaseService.AddPlacedObject(player, placementId, objectName, cf)
-
 		object.Parent = workspace.Objects
 		deletedObjectsCache[placementId] = nil
 
 		local sessionTrove = DatabaseService.GetTrove(player)
-		if sessionTrove then sessionTrove:Add(object) end
+		if sessionTrove then
+			sessionTrove:Add(object)
+		end
 	else
 		-- Blueprint Regeneration Path
 		local asset = shared.Assets:FindFirstChild(objectName)
-		if not asset then return end
+		if not asset then
+			return
+		end
 
 		local newObject = asset:Clone()
 		newObject:PivotTo(cf)
-
 		newObject:SetAttribute("PlacementId", placementId)
 		newObject:SetAttribute("PlacedBy", player.UserId)
 
@@ -374,8 +406,9 @@ events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments:
 		end
 
 		local sessionTrove = DatabaseService.GetTrove(player)
-		if sessionTrove then sessionTrove:Add(newObject) end
-
+		if sessionTrove then
+			sessionTrove:Add(newObject)
+		end
 		deletedObjectsCache[placementId] = nil
 	end
 end)
@@ -388,11 +421,17 @@ events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: { 
 	assert(object, `"Object" was not specified to be moved`)
 	assert(typeof(CF) == "CFrame", `"CF" was not specified`)
 
-	if not (object and object.Parent == workspace.Objects) then return end
-	if object:GetAttribute("PlacedBy") ~= player.UserId then return end
+	if not (object and object.Parent == workspace.Objects) then
+		return
+	end
+	if object:GetAttribute("PlacedBy") ~= player.UserId then
+		return
+	end
 
 	local placementId = object:GetAttribute("PlacementId")
-	if not placementId then return end
+	if not placementId then
+		return
+	end
 
 	local originalCF = object:GetPivot()
 	object:PivotTo(CF)
@@ -407,9 +446,12 @@ events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: { 
 end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
+	-- UPGRADED: Completely sweeps out any dead data dictionary footprints from memory
 	for placementId, cacheEntry in pairs(deletedObjectsCache) do
-		if cacheEntry.Instance and cacheEntry.Instance:GetAttribute("PlacedBy") == player.UserId then
-			cacheEntry.Instance:Destroy()
+		if cacheEntry.OwnerId == player.UserId or (cacheEntry.Instance and cacheEntry.Instance:GetAttribute("PlacedBy") == player.UserId) then
+			if cacheEntry.Instance then
+				cacheEntry.Instance:Destroy()
+			end
 			deletedObjectsCache[placementId] = nil
 		end
 	end
