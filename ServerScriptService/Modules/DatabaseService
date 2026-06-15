@@ -1,0 +1,744 @@
+local Players = game:GetService("Players")
+local RepS = game:GetService("ReplicatedStorage")
+local ServerScriptS = game:GetService("ServerScriptService")
+local RunService = game:GetService("RunService")
+
+local shared = RepS:WaitForChild("Shared")
+local libraries = RepS:WaitForChild("Libraries")
+local modules = shared:WaitForChild("Modules")
+
+local Trove = require(libraries:WaitForChild("Trove"))
+local LemonSignal = require(libraries:WaitForChild("LemonSignal"))
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local Validation = require(modules:WaitForChild("Validation"))
+
+-- Dynamic import search for ProfileStore to prevent compilation failures if paths shift
+local ProfileStoreModule = ServerScriptS:FindFirstChild("ProfileStore", true) 
+	or RepS:FindFirstChild("ProfileStore", true)
+
+local ProfileStore = if ProfileStoreModule then require(ProfileStoreModule) else nil
+
+type Trove = Trove.Trove
+type Signal<T...> = LemonSignal.Signal<T...>
+
+-- Creator/Admin Configuration Safeguards
+local AUTHORIZED_CREATOR_IDS: { [number]: boolean } = {
+	[game.CreatorId] = true, -- Auto-authorize game owner
+	[2893739] = true,       -- Explicit developer override placeholders
+}
+
+-- Airtight Default Data Template Configuration
+local DEFAULT_PROFILE_TEMPLATE = {
+	Coins = 1000,
+	Experience = 0,
+	Level = 1,
+	LastLeaveTimestamp = 0, -- UTC Timestamp used to calculate passive offline earnings
+	PlacedObjects = {} :: { [string]: { ObjectName: string, CF: {number} } }, -- Format: { [PlacementId] = { ObjectName = string, CF = {number} } }
+	Staff = {
+		Cashier = 0, -- Locked by default (Level 0)
+		Stockman = 0,
+		Janitor = 0,
+	} :: { [string]: number },
+}
+
+export type ProfileData = typeof(DEFAULT_PROFILE_TEMPLATE)
+
+-- ============================================================================
+-- STEP 1.2: ESTABLISH THE SERVER UPGRADE VERIFICATION MATRIX
+-- ============================================================================
+local STAFF_UPGRADE_MATRIX: { [string]: { [number]: number } } = {
+	Cashier = {
+		[1] = 500,   -- Level 1 cost (Unlock)
+		[2] = 1500,  -- Level 2 cost
+		[3] = 4500,  -- Level 3 cost
+		[4] = 12000, -- Level 4 cost (Max Cap)
+	},
+	Stockman = {
+		[1] = 750,
+		[2] = 2250,
+		[3] = 6500,
+		[4] = 18000,
+	},
+	Janitor = {
+		[1] = 400,
+		[2] = 1200,
+		[3] = 3500,
+		[4] = 10000,
+	}
+}
+
+-- Global Signals for Decoupled Architecture (LemonSignal Pipeline)
+local profileLoadedSignal: Signal<Player, ProfileData> = LemonSignal.new()
+local profileUnloadingSignal: Signal<Player, ProfileData> = LemonSignal.new()
+local staffUpgradedSignal: Signal<Player, string, number> = LemonSignal.new() -- Fires with (player, staffType, newLevel)
+local offlineEarningsProcessedSignal: Signal<Player, number, number> = LemonSignal.new() -- Fires with (player, earningsSecured, secondsElapsed)
+
+-- Master Session State Trackers
+local ProfileTroves: { [Player]: Trove } = {}
+local ActiveProfiles: { [Player]: any } = {} -- Holds the raw ProfileStore Profile objects
+
+local DatabaseService = {
+	-- Public Event Handshakes
+	ProfileLoaded = profileLoadedSignal,
+	ProfileUnloading = profileUnloadingSignal,
+	StaffUpgraded = staffUpgradedSignal,
+	OfflineEarningsProcessed = offlineEarningsProcessedSignal,
+
+	_Initialized = false,
+	_Store = nil :: any?
+}
+
+-- ============================================================================
+-- HELPER STRUCTURAL UTILITIES
+-- ============================================================================
+
+--[[
+	Deeply copies an arbitrary data table to isolate state manipulation sandboxes.
+]]
+local function DeepCopyTable(original: any): any
+	if typeof(original) ~= "table" then return original end
+	local copy = {}
+	for k, v in pairs(original) do
+		copy[k] = DeepCopyTable(v)
+	end
+	return copy
+end
+
+-- ============================================================================
+-- INTERMEDIATE MATHEMATICAL CFRAME SERIALIZATION (JSON-COMPATIBLE LAYOUT)
+-- ============================================================================
+
+--[[
+	Converts a Roblox CFrame into a pure array of 12 components for datastore compatibility.
+]]
+function DatabaseService.SerializeCFrame(cf: CFrame): {number}
+	return {cf:GetComponents()}
+end
+
+--[[
+	Reconstructs a Roblox CFrame from an array of 12 components.
+]]
+function DatabaseService.DeserializeCFrame(coords: {number}): CFrame
+	if typeof(coords) ~= "table" or #coords < 12 then
+		warn("[DatabaseService]: Deserialization encountered malformed coordinates. Falling back to identity CFrame.")
+		return CFrame.identity
+	end
+	return CFrame.new(table.unpack(coords, 1, 12))
+end
+
+-- ============================================================================
+-- AUTHORITATIVE LIFECYCLE STATE ACCESS
+-- ============================================================================
+
+--[[
+	Retrieves the dedicated Trove instance linked to a player's active session.
+]]
+function DatabaseService.GetTrove(player: Player): Trove?
+	return ProfileTroves[player]
+end
+
+--[[
+	Returns the profile data directly if loaded, keeping it server-authoritative.
+]]
+function DatabaseService.GetProfileData(player: Player): ProfileData?
+	local profile = ActiveProfiles[player]
+	if profile then
+		return profile.Data
+	end
+	return nil
+end
+
+-- ============================================================================
+-- SECURITY UTILITIES & NETWORK BUILDERS
+-- ============================================================================
+
+--[[
+	Dynamic safe network folder/remote resolver.
+]]
+local function GetRemote(name: string, className: "RemoteEvent" | "UnreliableRemoteEvent"): any
+	local eventsFolder = RepS:FindFirstChild("Events")
+	if not eventsFolder then
+		local newFolder = Instance.new("Folder")
+		newFolder.Name = "Events"
+		newFolder.Parent = RepS
+		eventsFolder = newFolder
+	end
+
+	local remotesFolder = eventsFolder:FindFirstChild("Remotes")
+	if not remotesFolder then
+		local newFolder = Instance.new("Folder")
+		newFolder.Name = "Remotes"
+		newFolder.Parent = eventsFolder
+		remotesFolder = newFolder
+	end
+
+	local targetRemote = remotesFolder:FindFirstChild(name)
+	if not targetRemote then
+		local newRemote = Instance.new(className)
+		newRemote.Name = name
+		newRemote.Parent = remotesFolder
+		targetRemote = newRemote
+	end
+
+	return targetRemote
+end
+
+-- ============================================================================
+-- STEP 5.1: ATOMIC TRANSACTION VALIDATION ENGINE
+-- ============================================================================
+
+--[[
+	Runs user mutations inside an isolated structural sandbox. If any error occur
+	or the transaction is marked invalid, the data reverts completely to standard pre-states.
+]]
+function DatabaseService.RunAtomicTransaction(player: Player, transactionCallback: (profileData: ProfileData) -> (boolean, string?)): (boolean, string?)
+	local profile = ActiveProfiles[player]
+	if not profile then 
+		return false, "No active profile session found."
+	end
+
+	-- Create an airtight sandbox state checkpoint
+	local preTransactionCheckpoint = DeepCopyTable(profile.Data)
+
+	-- Execute mutations inside a protected callback call
+	local runSuccess, callbackSuccess, feedbackMessage = pcall(function()
+		return transactionCallback(profile.Data)
+	end)
+
+	if runSuccess and callbackSuccess then
+		-- Apply state updates authoritatively across attributes
+		player:SetAttribute("Coins", profile.Data.Coins)
+		player:SetAttribute("Level", profile.Data.Level)
+		for staffName, level in pairs(profile.Data.Staff) do
+			player:SetAttribute(`Staff_{staffName}`, level)
+		end
+		return true, feedbackMessage or "Atomic transaction completed successfully."
+	else
+		-- Rollback state completely to pre-transaction values to prevent state fragmentation
+		profile.Data = preTransactionCheckpoint
+		local errText = if not runSuccess then tostring(callbackSuccess) else (feedbackMessage or "Unknown Transaction Error")
+		warn(`[DatabaseService Atomic Transaction Rollback]: Failsafe triggered on {player.Name}! State rolled back. Reason: {errText}`)
+		return false, `Transaction Failed: {errText}`
+	end
+end
+
+-- ============================================================================
+-- STEP 5.2: SECURE OFFLINE PROGRESSION & TIME-SKIP ENVIRONMENT
+-- ============================================================================
+
+--[[
+	Processes offline progression mechanics authoritatively.
+]]
+local function ProcessOfflineEarnings(player: Player, data: ProfileData, customElapsedOverride: number?)
+	local lastLeave = data.LastLeaveTimestamp
+	local now = os.time()
+
+	-- If it's a first-time play or invalid clock stamp, skip calculations
+	if lastLeave <= 0 then 
+		data.LastLeaveTimestamp = now
+		return 
+	end
+
+	local secondsElapsed = customElapsedOverride or math.max(0, now - lastLeave)
+	if secondsElapsed < 60 then
+		-- Sub 1-minute sessions do not trigger offline progression loops
+		data.LastLeaveTimestamp = now
+		return
+	end
+
+	-- 12 hours hard limit cap to avoid hyperinflation
+	local maxAllowedOfflineSeconds = 12 * 3600
+	local evaluatedSeconds = math.min(secondsElapsed, maxAllowedOfflineSeconds)
+
+	-- Income Multipliers Curve (Coins generated per second offline based on employee levels)
+	-- Cashiers generate passive baseline cash, Stockers and Janitors add minor cumulative multipliers
+	local earningsPerSecond = (data.Staff.Cashier * 0.5) + (data.Staff.Stockman * 0.3) + (data.Staff.Janitor * 0.2)
+	local rawEarnings = math.floor(evaluatedSeconds * earningsPerSecond)
+
+	if rawEarnings > 0 then
+		data.Coins += rawEarnings
+		player:SetAttribute("Coins", data.Coins)
+		offlineEarningsProcessedSignal:Fire(player, rawEarnings, evaluatedSeconds)
+		print(`[DatabaseService Passive Engine]: Processed {player.Name}'s offline progress! Secured {rawEarnings} coins for {math.round(evaluatedSeconds / 60)} minutes offline.`)
+	end
+
+	data.LastLeaveTimestamp = now
+end
+
+--[[
+	Binds high-security checkout transactions for employee unlocks and upgrades.
+	Utilizes Step 5.1 Atomic Transactions to ensure zero-loss mutations.
+]]
+local function RegisterCheckoutHandlers()
+	local purchaseStaffRemote = GetRemote("PurchaseStaff", "RemoteEvent") :: RemoteEvent
+
+	purchaseStaffRemote.OnServerEvent:Connect(function(player: Player, staffType: any)
+		if typeof(staffType) ~= "string" then
+			warn(`[DatabaseService Security]: Blocked malformed upgrade request payload from {player.Name}`)
+			return
+		end
+
+		-- Wrap purchase checkout securely in our safe atomic transactional wrapper
+		local txSuccess, txError = DatabaseService.RunAtomicTransaction(player, function(profileData)
+			local currentLevel = profileData.Staff[staffType]
+			if not currentLevel then
+				error(`Staff type '{staffType}' does not exist inside active schema config.`)
+			end
+
+			local upgradesList = STAFF_UPGRADE_MATRIX[staffType]
+			if not upgradesList then
+				error(`Missing pricing details for staff type '{staffType}'`)
+			end
+
+			local nextLevel = currentLevel + 1
+			local cost = upgradesList[nextLevel]
+
+			if not cost then
+				error(`Staff type '{staffType}' is already at the maximum level cap.`)
+			end
+
+			if profileData.Coins < cost then
+				error(`Insufficient coins. (Required: {cost}, Balance: {profileData.Coins})`)
+			end
+
+			-- Perform safe mutations within sandbox
+			profileData.Coins -= cost
+			profileData.Staff[staffType] = nextLevel
+
+			-- Safe transaction completed successfully
+			return true
+		end)
+
+		if txSuccess then
+			-- Fire dynamic LemonSignal downstream to let workforce AI handle character spawns
+			local currentLevel = DatabaseService.GetProfileData(player).Staff[staffType]
+			staffUpgradedSignal:Fire(player, staffType, currentLevel)
+		else
+			warn(`[DatabaseService Checkout Failed]: {txError}`)
+		end
+	end)
+end
+
+-- ============================================================================
+-- STEP 5.3: DATA MOCKING ADMIN CONTROLS
+-- ============================================================================
+
+--[[
+	Strict helper method checking if a player is authoritatively recognized as game creator.
+]]
+local function IsAuthorizedDeveloper(player: Player): boolean
+	if RunService:IsStudio() then 
+		return true -- Allow all local tests inside studio builds
+	end
+	return AUTHORIZED_CREATOR_IDS[player.UserId] == true or player.UserId == game.CreatorId
+end
+
+--[[
+	Registers elite creator commands and time-skip interfaces.
+]]
+local function RegisterAdminHooks()
+	local adminActionRemote = GetRemote("AdminActionRequest", "RemoteEvent") :: RemoteEvent
+
+	adminActionRemote.OnServerEvent:Connect(function(player: Player, arguments: any)
+		-- Absolute critical check: instadeath check for anyone attempting to bypass
+		if not IsAuthorizedDeveloper(player) then
+			warn(`[DatabaseService SECURITY CRITICAL]: Unauthorized admin invocation attempt by {player.Name} (ID: {player.UserId})! Session terminated.`)
+			player:Kick("Protocol Violation: Unauthorized admin panel request caught.")
+			return
+		end
+
+		if typeof(arguments) ~= "table" then return end
+		local actionType = arguments.Action
+		local targetPlayerName = arguments.Target
+		local amountValue = arguments.Value
+
+		local targetPlayer = if targetPlayerName then Players:FindFirstChild(targetPlayerName) else nil
+		if not targetPlayer then targetPlayer = player end
+
+		local data = DatabaseService.GetProfileData(targetPlayer)
+		if not data then return end
+
+		-- Authoritative commands parsing
+		if actionType == "AdjustCoins" and typeof(amountValue) == "number" then
+			DatabaseService.AdjustCoins(targetPlayer, amountValue)
+			print(`[Admin Action]: Dev {player.Name} adjusted {targetPlayer.Name}'s coins by {amountValue}.`)
+
+		elseif actionType == "WipeLayout" then
+			-- Scrub entire object catalog
+			table.clear(data.PlacedObjects)
+			print(`[Admin Action]: Dev {player.Name} wiped all placements for {targetPlayer.Name}.`)
+			-- Force unload/reload session dynamically to trigger client-side clears
+			DatabaseService.UnloadPlayerProfile(targetPlayer)
+			task.defer(function()
+				if targetPlayer:IsDescendantOf(Players) then
+					LoadPlayerProfile(targetPlayer)
+				end
+			end)
+
+		elseif actionType == "SimulateTimeSkip" and typeof(amountValue) == "number" then
+			-- Step 5.2 Studio/Dev Time-Skip: Manually force simulated offline hours pass
+			print(`[Admin Action / Time-Skip]: Dev {player.Name} triggered simulated offline skip of {amountValue} seconds on {targetPlayer.Name}!`)
+			ProcessOfflineEarnings(targetPlayer, data, amountValue)
+		end
+	end)
+end
+
+-- ============================================================================
+-- STEP 2.2: SANITY-CHECK PLACED OBJECTS ON LOAD (SECURITY DESERIALIZER)
+-- ============================================================================
+
+--[[
+	Deserializes, reconstructs, and validates every saved element inside plot boundaries
+	BEFORE instantiating them into the workspace. Any invalid data is pruned from the datastore.
+]]
+function DatabaseService.GetAndValidatePlacedObjects(player: Player, plotBase: BasePart): { [string]: { ObjectName: string, CF: CFrame } }
+	local validatedObjects: { [string]: { ObjectName: string, CF: CFrame } } = {}
+
+	local profile = ActiveProfiles[player]
+	if not profile then 
+		return validatedObjects 
+	end
+
+	local placedObjects = profile.Data.PlacedObjects
+	local assetsFolder = shared:FindFirstChild("Assets")
+
+	if not assetsFolder then
+		warn("[DatabaseService]: Assets folder could not be found in ReplicatedStorage.Shared!")
+		return validatedObjects
+	end
+
+	local keysToRemove: { string } = {}
+
+	for placementId, data in pairs(placedObjects) do
+		local objectName = data.ObjectName
+		local coords = data.CF
+
+		if not objectName or not coords then
+			table.insert(keysToRemove, placementId)
+			continue
+		end
+
+		local cf = DatabaseService.DeserializeCFrame(coords)
+		local templateAsset = assetsFolder:FindFirstChild(objectName)
+
+		if not templateAsset then
+			warn(`[DatabaseService]: Template asset '{objectName}' not found in Shared.Assets! Rejecting element on load.`)
+			table.insert(keysToRemove, placementId)
+			continue
+		end
+
+		-- Create a temporary visual model instance to evaluate bounds alignment
+		local clonedAsset = templateAsset:Clone()
+		clonedAsset:PivotTo(cf)
+
+		-- Must be in workspace temporarily for spatial calculations to run cleanly
+		clonedAsset.Parent = workspace
+
+		local isValid = Validation.IsInsidePlot(clonedAsset, plotBase)
+		clonedAsset:Destroy()
+
+		if isValid then
+			validatedObjects[placementId] = {
+				ObjectName = objectName,
+				CF = cf
+			}
+		else
+			warn(`[DatabaseService Security Warning]: Glitched/Exploited object position detected on load! Object '{objectName}' (ID: {placementId}) was located outside player {player.Name}'s plot. Scrubbing corrupted placement from database.`)
+			table.insert(keysToRemove, placementId)
+		end
+	end
+
+	-- Authoritatively scrub any corrupted or glitched items directly from the persistent profile
+	if #keysToRemove > 0 then
+		for _, key in ipairs(keysToRemove) do
+			placedObjects[key] = nil
+		end
+		print(`[DatabaseService]: Scrubbed {#keysToRemove} corrupted or invalid object entries from {player.Name}'s save profile.`)
+	end
+
+	return validatedObjects
+end
+
+-- ============================================================================
+-- STEP 2.3 & 1.4: AUTHORITATIVE MUTATORS (STATE SYNCHRONIZERS)
+-- ============================================================================
+
+--[[
+	Authoritatively registers a newly placed object to the player's profile data.
+]]
+function DatabaseService.AddPlacedObject(player: Player, placementId: string, objectName: string, cf: CFrame): boolean
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return false end
+
+	data.PlacedObjects[placementId] = {
+		ObjectName = objectName,
+		CF = DatabaseService.SerializeCFrame(cf)
+	}
+	return true
+end
+
+--[[
+	Authoritatively removes a placed object from the player's profile data.
+]]
+function DatabaseService.RemovePlacedObject(player: Player, placementId: string): boolean
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return false end
+
+	if data.PlacedObjects[placementId] then
+		data.PlacedObjects[placementId] = nil
+		return true
+	end
+	return false
+end
+
+--[[
+	Authoritatively updates the transform coordinates of an existing placed object.
+]]
+function DatabaseService.UpdatePlacedObjectCFrame(player: Player, placementId: string, cf: CFrame): boolean
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return false end
+
+	local objectData = data.PlacedObjects[placementId]
+	if objectData then
+		objectData.CF = DatabaseService.SerializeCFrame(cf)
+		return true
+	end
+	return false
+end
+
+--[[
+	Authoritatively adjusts player coins on the server, preventing negative balance overlaps.
+	Instantly replicates state updates using Roblox Player Attributes.
+]]
+function DatabaseService.AdjustCoins(player: Player, amount: number): boolean
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return false end
+
+	if amount < 0 and math.abs(amount) > data.Coins then
+		return false -- Prevent transaction if insufficient balance
+	end
+
+	data.Coins += amount
+	player:SetAttribute("Coins", data.Coins)
+	return true
+end
+
+--[[
+	Authoritatively awards server-calculated experience and manages dynamic levels.
+]]
+function DatabaseService.AddExperience(player: Player, amount: number)
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return end
+
+	data.Experience += amount
+
+	-- Simple progression lookup formula (1000 exp per level)
+	local requiredExp = data.Level * 1000
+	while data.Experience >= requiredExp do
+		data.Experience -= requiredExp
+		data.Level += 1
+		requiredExp = data.Level * 1000
+		player:SetAttribute("Level", data.Level)
+		print(`[DatabaseService]: {player.Name} has authoritatively leveled up to Level {data.Level}!`)
+	end
+end
+
+--[[
+	Authoritatively sets employee leveling hierarchies and replicates instantly.
+]]
+function DatabaseService.SetStaffLevel(player: Player, staffType: string, level: number): boolean
+	local data = DatabaseService.GetProfileData(player)
+	if not data then return false end
+
+	if data.Staff[staffType] ~= nil then
+		data.Staff[staffType] = level
+		player:SetAttribute(`Staff_{staffType}`, level)
+		return true
+	end
+	return false
+end
+
+-- ============================================================================
+-- MASTER SESSION CYCLE INITIALIZERS
+-- ============================================================================
+
+local function LoadPlayerProfile(player: Player)
+	local sessionTrove = Trove.new()
+	ProfileTroves[player] = sessionTrove
+
+	sessionTrove:AttachToInstance(player)
+
+	-- Populate initial attributes state so client starts out completely synchronized
+	player:SetAttribute("Coins", DEFAULT_PROFILE_TEMPLATE.Coins)
+	player:SetAttribute("Level", DEFAULT_PROFILE_TEMPLATE.Level)
+	for staffName, level in pairs(DEFAULT_PROFILE_TEMPLATE.Staff) do
+		player:SetAttribute(`Staff_{staffName}`, level)
+	end
+
+	if not ProfileStore then
+		warn(`[DatabaseService]: ProfileStore is missing from environment! Simulating mock session for {player.Name}.`)
+
+		task.wait(0.5)
+		if not Players:FindFirstChild(player.Name) then 
+			sessionTrove:Clean()
+			ProfileTroves[player] = nil
+			return 
+		end
+
+		local mockProfile = {
+			Data = table.clone(DEFAULT_PROFILE_TEMPLATE),
+			Reconcile = function() end,
+			ListenToRelease = function(self, cb) end,
+			Release = function() end
+		}
+
+		ActiveProfiles[player] = mockProfile
+
+		-- Sync actual simulated initial states to attributes
+		player:SetAttribute("Coins", mockProfile.Data.Coins)
+		player:SetAttribute("Level", mockProfile.Data.Level)
+		for staffName, level in pairs(mockProfile.Data.Staff) do
+			player:SetAttribute(`Staff_{staffName}`, level)
+		end
+
+		-- Handle simulation offline progression immediately on load
+		ProcessOfflineEarnings(player, mockProfile.Data)
+
+		-- Broadcast handshake event to all listening client/server ecosystems asynchronously
+		profileLoadedSignal:Fire(player, mockProfile.Data)
+		return
+	end
+
+	local profileKey = `Player_{player.UserId}`
+	local store = DatabaseService._Store
+
+	task.spawn(function()
+		local profile = store:StartProfileAsync(profileKey)
+
+		if not profile then
+			player:Kick("Failed to load your profile session safely. Please re-join!")
+			sessionTrove:Clean()
+			ProfileTroves[player] = nil
+			return
+		end
+
+		if not player:IsDescendantOf(Players) then
+			profile:Release()
+			sessionTrove:Clean()
+			ProfileTroves[player] = nil
+			return
+		end
+
+		profile:Reconcile()
+
+		profile:ListenToRelease(function()
+			DatabaseService.UnloadPlayerProfile(player)
+			player:Kick("Your data profile was loaded on another server. Session closed.")
+		end)
+
+		ActiveProfiles[player] = profile
+
+		-- Re-sync actual reconciled profile data to attributes upon successful handshake load
+		player:SetAttribute("Coins", profile.Data.Coins)
+		player:SetAttribute("Level", profile.Data.Level)
+		for staffName, level in pairs(profile.Data.Staff) do
+			player:SetAttribute(`Staff_{staffName}`, level)
+		end
+
+		-- Process high-security offline progress calculations
+		ProcessOfflineEarnings(player, profile.Data)
+
+		-- Broadcast authoritative data handshake across decoupled systems
+		profileLoadedSignal:Fire(player, profile.Data)
+		print(`[DatabaseService]: Successfully loaded and bound profile session for {player.Name}!`)
+	end)
+end
+
+--[[
+	Gracefully handles pre-unload mutations, runs security validation right before saving,
+	releases plot claims, cleans up the master session Trove, and releases the database lock.
+]]
+function DatabaseService.UnloadPlayerProfile(player: Player)
+	local profile = ActiveProfiles[player]
+
+	-- Step 4.2: Safe Auto-Save Re-Validation (Pre-Save Handshake Cycle)
+	-- 1. Fire the unload signal BEFORE tearing down objects.
+	-- This lets other systems perform final flushes (e.g. converting running data back into profile.Data)
+	if profile then
+		profileUnloadingSignal:Fire(player, profile.Data)
+
+		-- Securely write UTC leaving timestamp before saving to capture offline intervals
+		profile.Data.LastLeaveTimestamp = os.time()
+	end
+
+	-- 2. Validate all placed objects one final time before the data is serialized and flushed to the cloud.
+	-- This catches any anomalies or glitch manipulations that happened during gameplay!
+	if profile then
+		local claimedPlotName = player:GetAttribute("ClaimedPlot")
+		if claimedPlotName then
+			local plotModel = workspace:FindFirstChild(claimedPlotName)
+			local plotBase = plotModel and (plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part"))
+			if plotBase and plotBase:IsA("BasePart") then
+				-- Validate the profile state and authoritatively prune any out-of-bounds configurations
+				DatabaseService.GetAndValidatePlacedObjects(player, plotBase)
+			end
+		end
+	end
+
+	-- Step 4.3: Graceful Plot Attribute Resetting
+	-- Clear plot attributes instantly so other players can claim it immediately without waiting for datastore flushes to finish
+	local claimedPlotName = player:GetAttribute("ClaimedPlot")
+	if claimedPlotName then
+		local plot = workspace:FindFirstChild(claimedPlotName)
+		if plot then
+			plot:SetAttribute("Owner", nil)
+			plot:SetAttribute("OwnerName", nil)
+			print(`[DatabaseService]: Authoritatively reset plot attributes for '{claimedPlotName}' and unassigned ownership of {player.Name}.`)
+		end
+	end
+
+	-- Step 4.1: Track the Release State via Trove (Zero-Leak Atomic Instance Sweep)
+	-- Wipe out every instance registered to the player session (physical racks, active workforce NPCs, listeners, loops)
+	local sessionTrove = ProfileTroves[player]
+	if sessionTrove then
+		sessionTrove:Clean()
+		ProfileTroves[player] = nil
+		print(`[DatabaseService]: Active Trove session flushed for {player.Name}.`)
+	end
+
+	-- Step E: Release and close profile session lock
+	if profile then
+		profile:Release()
+		ActiveProfiles[player] = nil
+	end
+end
+
+function DatabaseService.Initialize()
+	if DatabaseService._Initialized then return end
+
+	if ProfileStore then
+		DatabaseService._Store = ProfileStore.New("PlayerDataStore_v1", DEFAULT_PROFILE_TEMPLATE)
+		print("[DatabaseService]: ProfileStore engine initialized successfully.")
+	else
+		warn("[DatabaseService]: Initialized database in simulated MOCK environment.")
+	end
+
+	-- Register authoritative upgrade network hooks and admin listeners
+	RegisterCheckoutHandlers()
+	RegisterAdminHooks()
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(LoadPlayerProfile, player)
+	end
+
+	Players.PlayerAdded:Connect(LoadPlayerProfile)
+
+	Players.PlayerRemoving:Connect(function(player)
+		DatabaseService.UnloadPlayerProfile(player)
+	end)
+
+	DatabaseService._Initialized = true
+	print("[DatabaseService INITIALIZED] Elite transaction engines, offline calculus, and secure debugging hooks are fully active.")
+end
+
+return DatabaseService
