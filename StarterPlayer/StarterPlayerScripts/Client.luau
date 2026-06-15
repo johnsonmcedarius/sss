@@ -565,6 +565,7 @@ end)
 undoButton.MouseButton1Click:Connect(function()
 	if #undoStack == 0 then return end
 	local action = table.remove(undoStack)
+
 	if action.Type == "Place" then
 		local targetItem: Instance? = nil
 		for _, child in workspace.Objects:GetChildren() do
@@ -573,7 +574,9 @@ undoButton.MouseButton1Click:Connect(function()
 				break
 			end
 		end
-		if targetItem then events.Remotes.Delete:FireServer({ Object = targetItem }) end
+		if targetItem then 
+			events.Remotes.Delete:FireServer({ Object = targetItem, ObjectName = action.ObjectName }) 
+		end
 	elseif action.Type == "Delete" then
 		local restoreRemote = events.Remotes:FindFirstChild("Restore")
 		if restoreRemote then
@@ -605,6 +608,7 @@ undoButton.MouseButton1Click:Connect(function()
 			})
 		end
 	end
+
 	table.insert(redoStack, action)
 	UpdateHistoryUI()
 end)
@@ -612,6 +616,7 @@ end)
 redoButton.MouseButton1Click:Connect(function()
 	if #redoStack == 0 then return end
 	local action = table.remove(redoStack)
+
 	if action.Type == "Place" then
 		local restoreRemote = events.Remotes:FindFirstChild("Restore")
 		if restoreRemote then
@@ -635,7 +640,12 @@ redoButton.MouseButton1Click:Connect(function()
 				break
 			end
 		end
-		if targetItem then events.Remotes.Delete:FireServer({ Object = targetItem }) end
+
+		if targetItem then 
+			events.Remotes.Delete:FireServer({ Object = targetItem, ObjectName = action.ObjectName }) 
+		else
+			events.Remotes.Delete:FireServer({ PlacementId = action.PlacementId, ObjectName = action.ObjectName })
+		end
 	elseif action.Type == "Move" then
 		local targetItem: Instance? = nil
 		for _, child in workspace.Objects:GetChildren() do
@@ -652,6 +662,7 @@ redoButton.MouseButton1Click:Connect(function()
 			})
 		end
 	end
+
 	table.insert(undoStack, action)
 	UpdateHistoryUI()
 end)
@@ -737,8 +748,7 @@ end
 for _, child in workspace:GetChildren() do BindPlotListener(child) end
 workspace.ChildAdded:Connect(BindPlotListener)
 
--- Initialize Local Systems (Core Client Bootstrapper Sequence)
---PlacingService:Initialize()
+-- Initialize Local Systems
 CrateToolController.Initialize()
 ShopController.Initialize()
 StockingController.Initialize()
