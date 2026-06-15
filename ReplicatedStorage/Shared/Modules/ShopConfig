@@ -1,3 +1,5 @@
+--!strict
+
 -- Define types to ensure airtight compiler compliance
 export type RarityData = {
 	Weight: number,
