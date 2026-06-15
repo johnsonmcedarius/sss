@@ -1,0 +1,139 @@
+local Players = game:GetService("Players")
+local RepS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local shared = RepS:WaitForChild("Shared")
+local libraries = RepS:WaitForChild("Libraries")
+local utility = shared:WaitForChild("Utility")
+
+local Trove = require(libraries:WaitForChild("Trove"))
+local General = require(utility:WaitForChild("General"))
+
+local player = Players.LocalPlayer
+
+local EconomyViewController = {
+	_Initialized = false,
+	_UiTrove = nil :: any?
+}
+
+--[[
+	Animates a TextLabel numeric counter to spin/roll smoothly up or down to its target value.
+	Uses a transient RenderStepped connection bound directly to the active Trove.
+]]
+local function AnimateNumberCounter(trove: any, label: TextLabel, attributeName: string, prefix: string)
+	prefix = prefix or ""
+	local currentValue = player:GetAttribute(attributeName) or 0
+	local displayedValue = currentValue
+
+	-- Write initial abbreviated state
+	label.Text = prefix .. General.Abbreviate(currentValue)
+
+	-- Track local animation state inside a sub-trove to allow clean resets per update
+	local animationTrove = trove:Extend()
+
+	local function updateLoop(dt: number)
+		local targetValue = player:GetAttribute(attributeName) or 0
+
+		-- Snap instantly if we are micro-close to the target
+		if math.abs(displayedValue - targetValue) < 0.1 then
+			displayedValue = targetValue
+			label.Text = prefix .. General.Abbreviate(displayedValue)
+			animationTrove:Clean() -- Safely unbind thread loop until next value change
+			return
+		end
+
+		-- High-end smooth interpolation math (Frame-rate independent decay)
+		displayedValue = General.Lerp(displayedValue, targetValue, 1 - math.exp(-14 * dt))
+		label.Text = prefix .. General.Abbreviate(math.round(displayedValue))
+	end
+
+	-- Bind native Attribute observer (No polling loops allowed!)
+	trove:Connect(player:GetAttributeChangedSignal(attributeName), function()
+		-- Clean previous frame loop before spawning a new one
+		animationTrove:Clean()
+		animationTrove:Connect(RunService.RenderStepped, updateLoop)
+	end)
+end
+
+--[[
+	Initializes the HUD bindings and mounts our zero-leak observers inside a life cycle context.
+	Also hooks up the Step 4 Welcome offline earnings handshake listener.
+]]
+function EconomyViewController.Initialize(hudFrame: Frame?)
+	if EconomyViewController._Initialized then return end
+
+	-- Create a dedicated life-cycle Trove block
+	local trove = Trove.new()
+	EconomyViewController._UiTrove = trove
+
+	-- Resolve player UI instances safely
+	local playerGui = player:WaitForChild("PlayerGui")
+	local mainHud = hudFrame or playerGui:WaitForChild("MainHUD", 10) :: any
+
+	if not mainHud then
+		warn("[EconomyViewController]: MainHUD could not be resolved in 10s. Postponing observer bindings.")
+		trove:Clean()
+		return
+	end
+
+	local coinsLabel = mainHud:FindFirstChild("CoinsLabel", true) :: TextLabel?
+	local diamondsLabel = mainHud:FindFirstChild("DiamondsLabel", true) :: TextLabel?
+
+	if coinsLabel then
+		AnimateNumberCounter(trove, coinsLabel, "Coins", "$")
+		print("[EconomyViewController]: Bound Coins HUD observer successfully.")
+	end
+
+	if diamondsLabel then
+		AnimateNumberCounter(trove, diamondsLabel, "Diamonds", "💎 ")
+		print("[EconomyViewController]: Bound Diamonds HUD observer successfully.")
+	end
+
+	-- ============================================================================
+	-- STEP 4 HANDSHAKE: OFFLINE REVENUE WELCOME MODAL OBSERVER
+	-- ============================================================================
+	local eventsFolder = RepS:WaitForChild("Events")
+	local notifyOfflineEarnings = eventsFolder:WaitForChild("Remotes"):WaitForChild("NotifyOfflineEarnings") :: RemoteEvent
+
+	trove:Connect(notifyOfflineEarnings.OnClientEvent, function(payload: { ElapsedTime: number, CoinsEarned: number })
+		local elapsedSeconds = payload.ElapsedTime
+		local rawCoins = payload.CoinsEarned
+
+		local hours = math.floor(elapsedSeconds / 3600)
+		local minutes = math.floor((elapsedSeconds % 3600) / 60)
+
+		print(`[EconomyViewController]: Welcome back! You generated ${General.Abbreviate(rawCoins)} over {hours}h {minutes}m.`)
+
+		-- Dynamically query playerGui for the welcome modal frame to inject data
+		local modal = playerGui:FindFirstChild("OfflineEarningsModal", true)
+		if modal and modal:IsA("Frame") then
+			local descLabel = modal:FindFirstChild("Description", true) :: TextLabel?
+			local amountLabel = modal:FindFirstChild("Amount", true) :: TextLabel?
+
+			if descLabel then
+				descLabel.Text = `While you were gone for {hours}h {minutes}m, your staff kept the boutique buzzing!`
+			end
+			if amountLabel then
+				amountLabel.Text = `+${General.Abbreviate(rawCoins)}`
+			end
+			modal.Visible = true
+		end
+	end)
+
+	EconomyViewController._Initialized = true
+end
+
+--[[
+	De-instantiates and completely tears down all active rendering threads and signal connections.
+	Guarantees absolute zero memory leaks when menus clean or players exit.
+]]
+function EconomyViewController.Destroy()
+	if EconomyViewController._UiTrove then
+		EconomyViewController._UiTrove:Clean()
+		EconomyViewController._UiTrove = nil
+	end
+	EconomyViewController._Initialized = false
+	print("[EconomyViewController]: Client lifecycle troves fully cleaned and listeners unbound.")
+end
+
+return EconomyViewController
