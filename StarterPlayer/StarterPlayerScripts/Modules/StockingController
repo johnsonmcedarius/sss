@@ -33,10 +33,10 @@ local function UpdateLocalPrompts(isHoldingCrate: boolean, crateStyle: string?)
 			continue
 		end
 
-		-- Read attributes securely
+		-- Read attributes securely with server-rule fallback initialization
 		local rackType = rack:GetAttribute("RackType") :: string?
-		local maxSlots = rack:GetAttribute("MaxSlots") :: number?
-		local occupiedSlots = rack:GetAttribute("OccupiedSlots") :: number?
+		local maxSlots = rack:GetAttribute("MaxSlots") or 4
+		local occupiedSlots = rack:GetAttribute("OccupiedSlots") or 0
 		local placedBy = rack:GetAttribute("PlacedBy") :: number?
 
 		-- Security & Logic checks:
@@ -44,7 +44,7 @@ local function UpdateLocalPrompts(isHoldingCrate: boolean, crateStyle: string?)
 		-- 2. Rack must not be full
 		-- 3. Crate must have items compatible with this rack type
 		local isOwner = placedBy == player.UserId
-		local hasSpace = (occupiedSlots or 0) < (maxSlots or 0)
+		local hasSpace = occupiedSlots < maxSlots
 
 		local hasCompatibleItem = false
 		if rackType then
@@ -125,7 +125,7 @@ function StockingController.Initialize()
 		end
 	end)
 
-	print("[StockingController INITIALIZED] Dynamic local ProximityPrompt triggers primed.")
+	print("[StockingController INITIALIZED] Dynamic local ProximityPrompt triggers primed with strict default clamps.")
 end
 
 return StockingController
