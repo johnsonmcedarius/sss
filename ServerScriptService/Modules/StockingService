@@ -322,6 +322,11 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 end
 
 local function BindStockingPrompt(rack: Model)
+	-- Force assign absolute attribute defaults immediately upon catching instance
+	if rack:GetAttribute("MaxSlots") == nil then rack:SetAttribute("MaxSlots", 4) end
+	if rack:GetAttribute("OccupiedSlots") == nil then rack:SetAttribute("OccupiedSlots", 0) end
+	if rack:GetAttribute("RackType") == nil then rack:SetAttribute("RackType", "Shoes") end
+
 	local prompt = rack:FindFirstChildOfClass("ProximityPrompt")
 
 	if not prompt then
@@ -330,13 +335,13 @@ local function BindStockingPrompt(rack: Model)
 		prompt.ActionText = "Place Merchandise"
 		prompt.HoldDuration = 0.2
 		prompt.KeyboardKeyCode = Enum.KeyCode.E
-		prompt.Enabled = true
+		prompt.Enabled = true -- Controlled dynamically by StockingController on client
 		prompt.MaxActivationDistance = 12
 		prompt.Parent = rack
 	else
 		prompt.ObjectText = "Stock Shelf"
 		prompt.ActionText = "Place Merchandise"
-		prompt.Enabled = true
+		prompt.Enabled = false -- Override existing prompt state for client-side visibility management
 	end
 
 	prompt.Triggered:Connect(function(player)
@@ -370,6 +375,7 @@ function StockingService.Initialize()
 	end)
 
 	StockingService._Initialized = true
+	print("[StockingService INITIALIZED] Central layout hooks and attribute safety fallbacks active.")
 end
 
 return StockingService
