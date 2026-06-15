@@ -1,10 +1,17 @@
 local RepS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local ServerScriptS = game:GetService("ServerScriptService")
 
 local shared = RepS.Shared
 local events = RepS.Events
 
 local Validation = require(shared.Modules.Validation)
+
+-- Locate and initialize our database and server modules
+local serverModules = ServerScriptS:WaitForChild("Modules")
+local DatabaseService = require(serverModules:WaitForChild("DatabaseService"))
+local ShopService = require(serverModules:WaitForChild("ShopService"))
+local StockingService = require(serverModules:WaitForChild("StockingService"))
 
 -- Create Restore remote dynamically if it doesn't exist
 if not events.Remotes:FindFirstChild("Restore") then
@@ -14,12 +21,6 @@ if not events.Remotes:FindFirstChild("Restore") then
 end
 
 local deletedObjectsCache = {}
-
--- Locate and initialize our newly built Shop Service module
-local serverScriptService = game:GetService("ServerScriptService")
-local serverModules = serverScriptService:WaitForChild("Modules")
-local ShopService = require(serverModules:WaitForChild("ShopService"))
-local StockingService = require(serverModules:WaitForChild("StockingService"))
 
 -- Secure retrieval of the exact floor/boundary of the player's plot
 local function GetPlayerPlotBase(player: Player): BasePart?
@@ -36,8 +37,57 @@ local function GetPlayerPlotBase(player: Player): BasePart?
 	return nil
 end
 
+--[[
+	Authoritatively spawns a player's saved boutique layout upon plot claim and binds
+	every spawned instance directly to their master session Trove for automated, zero-leak cleanup.
+]]
+local function SpawnPlayerSavedLayout(player: Player, plotModel: Instance)
+	local plotBase = plotModel:FindFirstChild("Base") or plotModel:FindFirstChildOfClass("Part")
+	if not plotBase or not plotBase:IsA("BasePart") then
+		warn(`[Server]: Failed to locate valid plot base part for {plotModel.Name}. Cannot spawn saved layout.`)
+		return
+	end
+
+	local sessionTrove = DatabaseService.GetTrove(player)
+	if not sessionTrove then
+		warn(`[Server]: Master session Trove for {player.Name} was unresolved. Aborting save restoration.`)
+		return
+	end
+
+	-- Retrieve only fully validated, non-glitched coordinate layouts from database
+	local savedLayout = DatabaseService.GetAndValidatePlacedObjects(player, plotBase)
+	local assetsFolder = shared:FindFirstChild("Assets")
+
+	if not assetsFolder then return end
+
+	print(`[Server]: Restoring {player.Name}'s validated layout ({#savedLayout} items) onto {plotModel.Name}...`)
+
+	for placementId, objectData in pairs(savedLayout) do
+		local assetTemplate = assetsFolder:FindFirstChild(objectData.ObjectName)
+		if assetTemplate then
+			local spawnedClone = assetTemplate:Clone()
+			spawnedClone:PivotTo(objectData.CF)
+
+			-- Stencil authoritative identity tags
+			spawnedClone:SetAttribute("PlacementId", placementId)
+			spawnedClone:SetAttribute("PlacedBy", player.UserId)
+
+			if spawnedClone:GetAttribute("OccupiedSlots") == nil then
+				spawnedClone:SetAttribute("OccupiedSlots", 0)
+			end
+
+			spawnedClone.Parent = workspace.Objects
+
+			-- Zero-Leak Magic: Add instance directly to the player's session Trove!
+			-- When they disconnect, this model vanishes instantly without needing manual scanning loops.
+			sessionTrove:Add(spawnedClone)
+		end
+	end
+	print(`[Server]: Layout successfully restored for {player.Name}.`)
+end
+
 -- Secure plot claiming handler
-events.Remotes.ClaimPlot.OnServerEvent:Connect(function(player: Player, arguments: {[string]: any})
+events.Remotes.ClaimPlot.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local plotName: string = arguments.PlotName
 	assert(typeof(plotName) == "string", `"PlotName" was not specified`)
 
@@ -57,9 +107,13 @@ events.Remotes.ClaimPlot.OnServerEvent:Connect(function(player: Player, argument
 		end
 	end
 
+	-- Lock ownership attributes onto physical plot
 	plot:SetAttribute("Owner", player.UserId)
 	plot:SetAttribute("OwnerName", player.Name)
 	player:SetAttribute("ClaimedPlot", plotName)
+
+	-- Seamlessly spawn their persistent database layout onto their freshly claimed plot
+	SpawnPlayerSavedLayout(player, plot)
 
 	local spawnLocation: Instance? = plot:FindFirstChild("SpawnLocation")
 	if spawnLocation and spawnLocation:IsA("BasePart") then
@@ -71,13 +125,14 @@ events.Remotes.ClaimPlot.OnServerEvent:Connect(function(player: Player, argument
 end)
 
 -- Secure placement handler
-events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: {[string]: any})
+events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local objectName: string = arguments.ObjectName
 	local CF: CFrame = arguments.CF
 	local placementId: string? = arguments.PlacementId
 
 	assert(typeof(objectName) == "string", `"ObjectName" was not specified`)
 	assert(typeof(CF) == "CFrame", `"CF" was not specified`)
+	assert(typeof(placementId) == "string", `"PlacementId" was not specified`)
 
 	local claimedPlot = player:GetAttribute("ClaimedPlot")
 	if not claimedPlot then
@@ -100,43 +155,63 @@ events.Remotes.Place.OnServerEvent:Connect(function(player: Player, arguments: {
 		return
 	end
 
-	if placementId then
-		newObject:SetAttribute("PlacementId", placementId)
+	-- 1. Authoritatively bind the placement configuration to the persistent database save
+	local dbSuccess = DatabaseService.AddPlacedObject(player, placementId :: string, objectName, CF)
+	if not dbSuccess then
+		newObject:Destroy()
+		error(`[Server Database Error]: Failed to save placement for {player.Name}.`)
+		return
 	end
 
+	newObject:SetAttribute("PlacementId", placementId)
 	newObject:SetAttribute("PlacedBy", player.UserId)
 
-	-- FIX: Preserve pre-existing slots if it's an asset moving, only set to 0 if totally blank!
 	if newObject:GetAttribute("OccupiedSlots") == nil then
 		newObject:SetAttribute("OccupiedSlots", 0)
 	end
 
 	newObject.Parent = workspace.Objects
+
+	-- 2. Bind the newly spawned model to their master session Trove
+	local sessionTrove = DatabaseService.GetTrove(player)
+	if sessionTrove then
+		sessionTrove:Add(newObject)
+	end
 end)
 
--- Secure trash handler (Modified to cache deleted items safely)
-events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: {[string]: any})
+-- Secure trash handler
+events.Remotes.Delete.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local object: Instance? = arguments.Object
 	assert(object, `"Object" was not specified to be deleted`)
 
 	if object and object.Parent == workspace.Objects then
 		local placementId = object:GetAttribute("PlacementId")
 		if placementId then
+			-- 1. Scrub from authoritative database save profile instantly
+			DatabaseService.RemovePlacedObject(player, placementId)
 			deletedObjectsCache[placementId] = object
 		end
+
+		-- 2. Safely untrack from session Trove since we're destroying/removing it
+		local sessionTrove = DatabaseService.GetTrove(player)
+		if sessionTrove then
+			sessionTrove:Remove(object)
+		end
+
 		object.Parent = nil
 	else
 		error(`Unauthorized deletion call attempt by {player.Name}`)
 	end
 end)
 
--- Secure restore handler
-events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments: {[string]: any})
+-- Secure restore handler (for Undo/Redo operations)
+events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local placementId: string = arguments.PlacementId
 	local cf: CFrame = arguments.CF
 	local objectName: string = arguments.ObjectName
 
 	local object = deletedObjectsCache[placementId]
+	local plotBase = GetPlayerPlotBase(player)
 
 	if object then
 		if object:GetAttribute("PlacedBy") ~= player.UserId then
@@ -145,39 +220,50 @@ events.Remotes.Restore.OnServerEvent:Connect(function(player: Player, arguments:
 		end
 
 		object:PivotTo(cf)
-
-		local plotBase: BasePart? = GetPlayerPlotBase(player)
-		local hasValidPlacement: boolean = Validation.HasValidPlacement(object, plotBase)
+		local hasValidPlacement = Validation.HasValidPlacement(object, plotBase)
 
 		if not hasValidPlacement then
 			error(`{objectName} has invalid placement or boundaries violated`)
 			return
 		end
 
+		-- Authoritatively write layout change back to player profile
+		DatabaseService.AddPlacedObject(player, placementId, objectName, cf)
+
 		object.Parent = workspace.Objects
 		deletedObjectsCache[placementId] = nil
+
+		local sessionTrove = DatabaseService.GetTrove(player)
+		if sessionTrove then
+			sessionTrove:Add(object)
+		end
 	else
-		-- Fallback to Place from catalog asset directory if cache dropped
 		local asset = shared.Assets:FindFirstChild(objectName)
 		if not asset then return end
 		local newObject = asset:Clone()
 		newObject:PivotTo(cf)
 
-		local plotBase: BasePart? = GetPlayerPlotBase(player)
 		if not Validation.HasValidPlacement(newObject, plotBase) then
 			newObject:Destroy()
 			return
 		end
 
+		DatabaseService.AddPlacedObject(player, placementId, objectName, cf)
+
 		newObject:SetAttribute("PlacementId", placementId)
 		newObject:SetAttribute("PlacedBy", player.UserId)
 		newObject:SetAttribute("OccupiedSlots", 0)
 		newObject.Parent = workspace.Objects
+
+		local sessionTrove = DatabaseService.GetTrove(player)
+		if sessionTrove then
+			sessionTrove:Add(newObject)
+		end
 	end
 end)
 
 -- Secure movement handler
-events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: {[string]: any})
+events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: { [string]: any })
 	local object: Instance? = arguments.Object
 	local CF: CFrame = arguments.CF
 
@@ -194,6 +280,12 @@ events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: {[
 		return
 	end
 
+	local placementId = object:GetAttribute("PlacementId")
+	if not placementId then
+		error("Object does not possess a valid tracking PlacementId!")
+		return
+	end
+
 	local originalCF = object:GetPivot()
 	object:PivotTo(CF)
 
@@ -205,6 +297,9 @@ events.Remotes.Move.OnServerEvent:Connect(function(player: Player, arguments: {[
 		error(`{object.Name} has invalid movement target or boundaries violated`)
 		return
 	end
+
+	-- Authoritatively write position updates back to the persistent database profile
+	DatabaseService.UpdatePlacedObjectCFrame(player, placementId, CF)
 end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
@@ -215,6 +310,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 		end
 	end
 
+	-- Clear standard plot locks on exit instantly
 	for _, p in workspace:GetChildren() do
 		if string.find(p.Name, "^Plot%d+$") and p:GetAttribute("Owner") == player.UserId then
 			p:SetAttribute("Owner", nil)
@@ -223,5 +319,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
+-- Load and boot core background systems
+DatabaseService.Initialize()
 ShopService.Initialize()
 StockingService.Initialize()
