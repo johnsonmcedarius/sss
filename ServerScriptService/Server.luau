@@ -10,6 +10,7 @@ local Validation = require(shared.Modules.Validation)
 -- Locate and initialize our database and server modules
 local serverModules = ServerScriptS:WaitForChild("Modules")
 local DatabaseService = require(serverModules:WaitForChild("DatabaseService"))
+local EconomyService = require(serverModules:WaitForChild("EconomyService"))
 local ShopService = require(serverModules:WaitForChild("ShopService"))
 local StockingService = require(serverModules:WaitForChild("StockingService"))
 
@@ -321,5 +322,6 @@ end)
 
 -- Load and boot core background systems
 DatabaseService.Initialize()
+EconomyService.Initialize()
 ShopService.Initialize()
 StockingService.Initialize()
