@@ -1,0 +1,267 @@
+local Players = game:GetService("Players")
+local RepS = game:GetService("ReplicatedStorage")
+local ServerScriptS = game:GetService("ServerScriptService")
+
+local shared = RepS:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+
+local ShopConfig = require(modules:WaitForChild("ShopConfig"))
+local DatabaseService = require(script.Parent:WaitForChild("DatabaseService"))
+
+local EconomyService = {
+	_Initialized = false
+}
+
+-- High-performance server-side transaction debouncing map to crush click-spam
+local PurchaseDebounce: { [Player]: boolean } = {}
+
+-- ============================================================================
+-- SECURITY UTILITIES
+-- ============================================================================
+
+local function GetRemote(name: string, className: "RemoteEvent" | "UnreliableRemoteEvent"): any
+	local eventsFolder = RepS:FindFirstChild("Events")
+	if not eventsFolder then
+		local newFolder = Instance.new("Folder")
+		newFolder.Name = "Events"
+		newFolder.Parent = RepS
+		eventsFolder = newFolder
+	end
+
+	local remotesFolder = eventsFolder:FindFirstChild("Remotes")
+	if not remotesFolder then
+		local newFolder = Instance.new("Folder")
+		newFolder.Name = "Remotes"
+		newFolder.Parent = eventsFolder
+		remotesFolder = newFolder
+	end
+
+	local targetRemote = remotesFolder:FindFirstChild(name)
+	if not targetRemote then
+		local newRemote = Instance.new(className)
+		newRemote.Name = name
+		newRemote.Parent = remotesFolder
+		targetRemote = newRemote
+	end
+
+	return targetRemote
+end
+
+-- ============================================================================
+-- EXPOSE UNIFIED TRANSACTION GATEWAYS (Airtight Atomic Bouncer)
+-- ============================================================================
+
+--[[
+	Prepares and executes high-security adjustments for player Coins or Diamonds.
+	Wraps inside DatabaseService's atomic transaction sandbox to prevent fractional data loss.
+]]
+function EconomyService.PrepareTransaction(player: Player, currencyType: "Coins" | "Diamonds", amount: number): (boolean, string?)
+	assert(currencyType == "Coins" or currencyType == "Diamonds", `[EconomyService]: Invalid currencyType signature passed: {tostring(currencyType)}`)
+
+	-- Wrap the transaction in our safe atomic sandboxed bouncer
+	local success, feedbackMessage = DatabaseService.RunAtomicTransaction(player, function(profileData)
+		if currencyType == "Coins" then
+			local newBalance = profileData.Coins + amount
+
+			-- Dynamically check if calculation slides below zero, and force hard error to trigger automatic rollback
+			if newBalance < 0 then
+				error(`[EconomyService]: Transaction denied. Insufficient Coins! (Attempted: {amount}, Balance: {profileData.Coins})`)
+			end
+
+			profileData.Coins = newBalance
+
+			-- Add positive transaction payouts directly into authoritative lifetime track
+			if amount > 0 then
+				profileData.LifetimeEarned += amount
+			end
+
+		elseif currencyType == "Diamonds" then
+			local newBalance = profileData.Diamonds + amount
+
+			-- Safeguard premium diamonds from dipping negative
+			if newBalance < 0 then
+				error(`[EconomyService]: Transaction denied. Insufficient Diamonds! (Attempted: {amount}, Balance: {profileData.Diamonds})`)
+			end
+
+			profileData.Diamonds = newBalance
+		end
+
+		return true, "Transaction securely completed and registered."
+	end)
+
+	return success, feedbackMessage
+end
+
+-- ============================================================================
+-- ENFORCE RIGID MULTIPLIER FORMULAS (Closed-Source Calculus)
+-- ============================================================================
+
+--[[
+	Compiles and returns the absolute final payout for an item in a single-frame calculation layout.
+	Keep this calculus 100% server-authoritative. The client merely queries the output string for UI visual bindings.
+]]
+function EconomyService.CalculateFinalPayout(player: Player, basePrice: number, weatherTag: string): number
+	-- Safe weather mapping fallbacks
+	local weatherMultiplier = ShopConfig.WeatherMultipliers[weatherTag] or 1.0
+
+	-- Pull server-synchronized employee levels directly from high-speed instance attributes
+	local cashierLevel = player:GetAttribute("Staff_Cashier") or 0
+	local stockmanLevel = player:GetAttribute("Staff_Stockman") or 0
+	local janitorLevel = player:GetAttribute("Staff_Janitor") or 0
+
+	-- Compound Multiplier Curve: Cashiers scale core checkout velocity, supportive staff stack auxiliary boosts
+	local employeeMultiplier = 1 + (cashierLevel * 0.15) + (stockmanLevel * 0.08) + (janitorLevel * 0.05)
+
+	-- Check for premium gamepass / double multiplier variables stored securely as attributes
+	local gamepassMultiplier = player:GetAttribute("IncomeMultiplier") or 1.0
+
+	-- Enforce a single-frame calculation layout: Base Price * Weather * Employees * Gamepasses
+	local finalPayout = math.round(basePrice * weatherMultiplier * employeeMultiplier * gamepassMultiplier)
+
+	return finalPayout
+end
+
+-- ============================================================================
+-- NETWORK BOUNDARY INITIALIZATION & SECURITY VALIDATORS
+-- ============================================================================
+
+function EconomyService.Initialize()
+	if EconomyService._Initialized then return end
+
+	local requestPlotExpansion = GetRemote("RequestPlotExpansion", "RemoteEvent") :: RemoteEvent
+	local requestStaffUpgrade = GetRemote("RequestStaffUpgrade", "RemoteEvent") :: RemoteEvent
+
+	-- 1. Hardened Plot Sizing Sinks Listener
+	requestPlotExpansion.OnServerEvent:Connect(function(player: Player, ...)
+		local extraArgs = {...}
+
+		-- Strict Security Rule: Throw error immediately if client sends any numeric configurations or price limits
+		for _, arg in ipairs(extraArgs) do
+			if typeof(arg) == "number" then
+				warn(`[EconomyService Security Violation]: {player.Name} (ID: {player.UserId}) tried passing numeric values directly to expansion remote! Potential exploit prevented.`)
+				player:Kick("Protocol Violation: Malformed plot expansion call caught.")
+				return
+			end
+		end
+
+		-- Instant click-spam filter
+		if PurchaseDebounce[player] then return end
+		PurchaseDebounce[player] = true
+
+		local profileData = DatabaseService.GetProfileData(player)
+		if not profileData then
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		local currentTier = profileData.ExpansionTier or 1
+		local nextTier = currentTier + 1
+		local nextTierData = ShopConfig.ExpansionTiers[nextTier]
+
+		-- Ensure next tier actually exists inside configurations
+		if not nextTierData then
+			warn(`[EconomyService]: Player {player.Name} tried expanding beyond maximum tier!`)
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		local cost = nextTierData.Cost
+		local size = nextTierData.Size
+
+		-- Execute the transaction sandbox pipeline authoritatively
+		local txSuccess, feedback = EconomyService.PrepareTransaction(player, "Coins", -cost)
+		if txSuccess then
+			-- Mutate tier values securely inside data structure
+			profileData.ExpansionTier = nextTier
+			player:SetAttribute("ExpansionTier", nextTier)
+
+			-- Dispatch structural success payload to client to smoothly animate perimeter boundaries
+			local plotExpandedRemote = GetRemote("PlotExpanded", "RemoteEvent") :: RemoteEvent
+			plotExpandedRemote:FireClient(player, nextTier, size)
+
+			print(`[EconomyService]: Plot expansion transaction completed for {player.Name} to Tier {nextTier} ({size}x{size} studs).`)
+		else
+			warn(`[EconomyService]: Plot expansion transaction failed for {player.Name} - {tostring(feedback)}`)
+		end
+
+		PurchaseDebounce[player] = nil
+	end)
+
+	-- 2. Hardened Staff Level Checkout Listener
+	requestStaffUpgrade.OnServerEvent:Connect(function(player: Player, staffType: any, ...)
+		local extraArgs = {...}
+
+		-- Ensure incoming variables match exact string format (No numeric price injections!)
+		if typeof(staffType) ~= "string" then
+			warn(`[EconomyService Security]: Player {player.Name} sent non-string staff type!`)
+			return
+		end
+
+		for _, arg in ipairs(extraArgs) do
+			if typeof(arg) == "number" then
+				warn(`[EconomyService Security Violation]: {player.Name} tried passing numeric upgrade variables to staff remote!`)
+				player:Kick("Protocol Violation: Malformed staff upgrade call caught.")
+				return
+			end
+		end
+
+		if PurchaseDebounce[player] then return end
+		PurchaseDebounce[player] = true
+
+		local profileData = DatabaseService.GetProfileData(player)
+		if not profileData then
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		local currentLevel = profileData.Staff[staffType]
+		if currentLevel == nil then
+			warn(`[EconomyService]: Staff type '{tostring(staffType)}' does not exist in schema template.`)
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		local upgradesList = ShopConfig.StaffUpgrades[staffType]
+		if not upgradesList then
+			warn(`[EconomyService]: Upgrade list not defined for staff '{tostring(staffType)}'`)
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		local nextLevel = currentLevel + 1
+		local cost = upgradesList[nextLevel]
+
+		if not cost then
+			warn(`[EconomyService]: Staff '{tostring(staffType)}' is already at max tier level cap ({currentLevel}).`)
+			PurchaseDebounce[player] = nil
+			return
+		end
+
+		-- Execute workforce checkout transaction inside safe pipeline bouncer
+		local txSuccess, feedback = EconomyService.PrepareTransaction(player, "Coins", -cost)
+		if txSuccess then
+			-- Mutate actual worker levels inside authoritative structures
+			profileData.Staff[staffType] = nextLevel
+			player:SetAttribute(`Staff_{staffType}`, nextLevel)
+
+			-- Fire LemonSignal downstream via DatabaseService to let AI systems load/spawn NPCs
+			DatabaseService.StaffUpgraded:Fire(player, staffType, nextLevel)
+
+			print(`[EconomyService]: Staff checkout transaction completed for {player.Name}. Upgraded '{staffType}' to Level {nextLevel}.`)
+		else
+			warn(`[EconomyService]: Staff upgrade failed for {player.Name} - {tostring(feedback)}`)
+		end
+
+		PurchaseDebounce[player] = nil
+	end)
+
+	-- Clean up debounce tracks on unexpected player disconnect events
+	Players.PlayerRemoving:Connect(function(player)
+		PurchaseDebounce[player] = nil
+	end)
+
+	EconomyService._Initialized = true
+	print("[EconomyService INITIALIZED] Secure transaction handlers, single-frame multipliers, and network debouncing systems active.")
+end
+
+return EconomyService
