@@ -1,22 +1,21 @@
-local CollectionS = game:GetService("CollectionService")
-local RepS = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
+local CollectionS = game:GetService("CollectionService") 
+local RepS = game:GetService("ReplicatedStorage") 
+local Players = game:GetService("Players") 
 local ServerScriptS = game:GetService("ServerScriptService")
 
-local shared = RepS:WaitForChild("Shared")
+local shared = RepS:WaitForChild("Shared") 
 local modules = shared:WaitForChild("Modules")
 
-local ShopConfig = require(modules:WaitForChild("ShopConfig"))
-local Validation = require(modules:WaitForChild("Validation"))
+local ShopConfig = require(modules:WaitForChild("ShopConfig")) 
+local Validation = require(modules:WaitForChild("Validation")) 
 local DatabaseService = require(script.Parent:WaitForChild("DatabaseService"))
 
-local StockingService = {
-	_Initialized = false
+local StockingService = { 
+	_Initialized = false 
 }
 
--- Returns the physical base part of the player's claimed plot
-local function GetPlayerPlotBase(player: Player): BasePart?
-	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot")
+local function GetPlayerPlotBase(player: Player): BasePart? 
+	local claimedPlotName: string? = player:GetAttribute("ClaimedPlot") 
 	if not claimedPlotName then return nil end
 
 	local plotModel: Instance? = workspace:FindFirstChild(claimedPlotName)
@@ -29,23 +28,21 @@ local function GetPlayerPlotBase(player: Player): BasePart?
 	return nil
 end
 
--- Verifies if a crate style has any valid visual items matching the rack's category
-local function HasCompatibleItems(crateStyle: string, rackType: string): boolean
-	for _, item in pairs(ShopConfig.Items) do
-		if item.Theme == crateStyle and item.Category == rackType then
-			return true
-		end
-	end
-	return false
+local function HasCompatibleItems(crateStyle: string, rackType: string): boolean 
+	for _, item in pairs(ShopConfig.Items) do 
+		if item.Theme == crateStyle and item.Category == rackType then 
+			return true 
+		end 
+	end 
+	return false 
 end
 
--- Procedural visual asset builder that bypasses active physics checks
-local function SetupVisualPhysics(itemModel: Instance)
-	if itemModel:IsA("BasePart") then
-		itemModel.Anchored = true
-		itemModel.CanCollide = false
-		itemModel.CanTouch = false
-		itemModel.CanQuery = false
+local function SetupVisualPhysics(itemModel: Instance) 
+	if itemModel:IsA("BasePart") then 
+		itemModel.Anchored = true 
+		itemModel.CanCollide = false 
+		itemModel.CanTouch = false 
+		itemModel.CanQuery = false 
 	end
 
 	for _, desc in ipairs(itemModel:GetDescendants()) do
@@ -60,13 +57,12 @@ local function SetupVisualPhysics(itemModel: Instance)
 	end
 end
 
--- Rolls the gacha table utilizing the theme of the crate and filters by rack category
-local function RollSlotItem(player: Player, crateTheme: string, rackType: string): string?
-	local candidates = {}
-	for name, details in pairs(ShopConfig.Items) do
-		if details.Theme == crateTheme and details.Category == rackType then
-			table.insert(candidates, name)
-		end
+local function RollSlotItem(player: Player, crateTheme: string, rackType: string): string? 
+	local candidates = {} 
+	for name, details in pairs(ShopConfig.Items) do 
+		if details.Theme == crateTheme and details.Category == rackType then 
+			table.insert(candidates, name) 
+		end 
 	end
 
 	if #candidates == 0 then
@@ -126,9 +122,8 @@ local function RollSlotItem(player: Player, crateTheme: string, rackType: string
 	return nil
 end
 
--- Spawns the physical 3D items inside the designated slot targets after security approval
-local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCrate: any)
-	local character = player.Character
+local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCrate: any) 
+	local character = player.Character 
 	if not character then return end
 
 	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -142,45 +137,28 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 
 	local placedBy = rack:GetAttribute("PlacedBy")
 	if placedBy ~= player.UserId then
-		warn(`[Stocking Security]: Unauthorized stocking attempt! {player.Name} tried to stock a rack owned by Player ID {placedBy}.`)
+		warn(`[Stocking Security]: Unauthorized stocking attempt!`)
 		return
 	end
 
 	local plotBase = GetPlayerPlotBase(player)
-	if not plotBase then
-		warn(`[Stocking Security]: Stocking rejected. Player {player.Name} does not own a claimed plot base.`)
-		return
-	end
+	if not plotBase then return end
 
 	local isInside = Validation.IsInsidePlot(rack, plotBase)
-	if not isInside then
-		warn(`[Stocking Security]: Exploit alert! {player.Name} tried to stock a rack located outside their plot boundaries!`)
-		return
-	end
+	if not isInside then return end
 
 	local maxSlots = rack:GetAttribute("MaxSlots") or 4
 	local occupiedSlots = rack:GetAttribute("OccupiedSlots") or 0
 	local rackType = rack:GetAttribute("RackType") or "Shoes"
 
-	if occupiedSlots >= maxSlots then
-		warn(`[Stocking Service]: Stocking rejected. Rack is already fully stocked ({occupiedSlots}/{maxSlots} slots).`)
-		return
-	end
+	if occupiedSlots >= maxSlots then return end
 
 	local isCompatible = HasCompatibleItems(parsedCrate.Style, rackType)
-	if not isCompatible then
-		warn(`[Stocking Security]: Crate category mismatch! {player.Name} tried to stock a "{parsedCrate.Style}" crate on a "{rackType}" rack.`)
-		return
-	end
+	if not isCompatible then return end
 
-	-- Retrieve master session Trove for dynamic cleanup assignment
 	local sessionTrove = DatabaseService.GetTrove(player)
-	if not sessionTrove then
-		warn(`[Stocking Service]: Session Trove unresolved. Aborting stocking transaction.`)
-		return
-	end
+	if not sessionTrove then return end
 
-	-- Destroy tool instanced backpack slot
 	tool:Destroy()
 
 	local displayFolder = rack:FindFirstChild("DisplayItems")
@@ -204,10 +182,7 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 
 		local attachmentName = `Slot{targetStockIndex}`
 		local attachment = rack:FindFirstChild(attachmentName, true) :: Attachment?
-		if not attachment then
-			warn(`[Stocking Service]: Visual placement attachment '{attachmentName}' not found on {rack.Name}!`)
-			continue
-		end
+		if not attachment then continue end
 
 		local spawnedModel: Instance? = nil
 
@@ -218,28 +193,14 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 
 			if hangerTemplate then
 				local hangerClone = hangerTemplate:Clone() :: Model
-
 				local shirtInstance = hangerClone:FindFirstChildOfClass("Shirt")
-				if shirtInstance then
-					local targetShirt = itemConfig.ShirtTemplate or itemConfig.TextureId
-					if targetShirt then
-						shirtInstance.ShirtTemplate = targetShirt
-					end
+				if shirtInstance and (itemConfig.ShirtTemplate or itemConfig.TextureId) then
+					shirtInstance.ShirtTemplate = itemConfig.ShirtTemplate or itemConfig.TextureId
 				end
-
 				local pantsInstance = hangerClone:FindFirstChildOfClass("Pants")
-				if pantsInstance then
-					local targetPants = itemConfig.PantsTemplate or itemConfig.TextureId
-					if targetPants then
-						pantsInstance.PantsTemplate = targetPants
-					end
+				if pantsInstance and (itemConfig.PantsTemplate or itemConfig.TextureId) then
+					pantsInstance.PantsTemplate = itemConfig.PantsTemplate or itemConfig.TextureId
 				end
-
-				local torsoPart = hangerClone:FindFirstChild("Torso") or hangerClone:FindFirstChildOfClass("MeshPart")
-				if torsoPart and torsoPart:IsA("MeshPart") and not shirtInstance and itemConfig.TextureId then
-					torsoPart.TextureID = itemConfig.TextureId
-				end
-
 				spawnedModel = hangerClone
 			else
 				local block = Instance.new("Part")
@@ -253,17 +214,11 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 
 			if meshesFolder then
 				local assetTemplate = meshesFolder:FindFirstChild(itemConfig.MeshName or "")
-				if assetTemplate then
-					spawnedModel = assetTemplate:Clone()
-				end
+				if assetTemplate then spawnedModel = assetTemplate:Clone() end
 			end
 		end
 
-		if not spawnedModel then
-			warn(`[Stocking Service]: Failed to build visual asset mesh for '{rolledItemName}'!`)
-			continue
-		end
-
+		if not spawnedModel then continue end
 		SetupVisualPhysics(spawnedModel)
 
 		local basePriceLookup = ShopConfig.PricingMatrix[rackType]
@@ -280,40 +235,29 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 
 			local shoeLeft = spawnedModel
 			local shoeRight = spawnedModel:Clone()
-
 			SetupVisualPhysics(shoeRight)
 
 			shoeLeft.Parent = parentGroup
 			shoeRight.Parent = parentGroup
 
-			local leftOffset = targetWorldCF * CFrame.new(-0.2, 0, 0) * CFrame.Angles(0, math.rad(-5), 0)
-			local rightOffset = targetWorldCF * CFrame.new(0.2, 0, 0) * CFrame.Angles(0, math.rad(5), 0)
-
-			shoeLeft:PivotTo(leftOffset)
-			shoeRight:PivotTo(rightOffset)
+			shoeLeft:PivotTo(targetWorldCF * CFrame.new(-0.2, 0, 0) * CFrame.Angles(0, math.rad(-5), 0))
+			shoeRight:PivotTo(targetWorldCF * CFrame.new(0.2, 0, 0) * CFrame.Angles(0, math.rad(5), 0))
 
 			parentGroup:SetAttribute("SlotPrice", targetValue)
 			parentGroup:SetAttribute("ItemName", rolledItemName)
-
-			-- Track visual groups via session Trove
 			sessionTrove:Add(parentGroup)
 		else
 			spawnedModel.Parent = displayFolder
-
 			local modelAttachment = spawnedModel:FindFirstChild("HangerSnap", true) :: Attachment?
-
 			if spawnedModel:IsA("Model") then
 				if modelAttachment then
-					local targetCFrame = targetWorldCF * modelAttachment.CFrame:Inverse()
-					spawnedModel:PivotTo(targetCFrame)
+					spawnedModel:PivotTo(targetWorldCF * modelAttachment.CFrame:Inverse())
 				else
 					spawnedModel:PivotTo(targetWorldCF)
 				end
-			elseif spawnedModel:IsA("BasePart") then
+			else
 				spawnedModel.CFrame = targetWorldCF
 			end
-
-			-- Track spawned model via session Trove
 			sessionTrove:Add(spawnedModel)
 		end
 	end
@@ -322,7 +266,6 @@ local function ProcessStocking(player: Player, rack: Model, tool: Tool, parsedCr
 end
 
 local function BindStockingPrompt(rack: Model)
-	-- Force assign absolute attribute defaults immediately upon catching instance
 	if rack:GetAttribute("MaxSlots") == nil then rack:SetAttribute("MaxSlots", 4) end
 	if rack:GetAttribute("OccupiedSlots") == nil then rack:SetAttribute("OccupiedSlots", 0) end
 	if rack:GetAttribute("RackType") == nil then rack:SetAttribute("RackType", "Shoes") end
@@ -335,47 +278,39 @@ local function BindStockingPrompt(rack: Model)
 		prompt.ActionText = "Place Merchandise"
 		prompt.HoldDuration = 0.2
 		prompt.KeyboardKeyCode = Enum.KeyCode.E
-		prompt.Enabled = true -- Controlled dynamically by StockingController on client
 		prompt.MaxActivationDistance = 12
 		prompt.Parent = rack
 	else
 		prompt.ObjectText = "Stock Shelf"
 		prompt.ActionText = "Place Merchandise"
-		prompt.Enabled = false -- Override existing prompt state for client-side visibility management
 	end
+
+	-- We initialize as false to ensure safety out the gate, client turns it on locally
+	prompt.Enabled = false 
 
 	prompt.Triggered:Connect(function(player)
 		local character = player.Character
 		local equippedTool = character and character:FindFirstChildOfClass("Tool")
-		if not equippedTool then 
-			warn(`[Stocking Service]: Triggered by {player.Name}, but no equipped tool was found on their character model!`)
-			return 
-		end
+		if not equippedTool then return end
 
 		local parsed = ShopConfig.ParseCrateName(equippedTool.Name)
 		if parsed then
 			ProcessStocking(player, rack, equippedTool, parsed)
-		else
-			warn(`[Stocking Service]: Triggered by {player.Name} with tool '{equippedTool.Name}', but couldn't parse its name!`)
 		end
 	end)
 end
 
 function StockingService.Initialize()
 	for _, inst in ipairs(CollectionS:GetTagged("RetailRack")) do
-		if inst:IsA("Model") then
-			BindStockingPrompt(inst)
-		end
+		if inst:IsA("Model") then BindStockingPrompt(inst) end
 	end
 
 	CollectionS:GetInstanceAddedSignal("RetailRack"):Connect(function(instance)
-		if instance:IsA("Model") then
-			BindStockingPrompt(instance)
-		end
+		if instance:IsA("Model") then BindStockingPrompt(instance) end
 	end)
 
 	StockingService._Initialized = true
-	print("[StockingService INITIALIZED] Central layout hooks and attribute safety fallbacks active.")
+	print("[StockingService INITIALIZED] Central layout hooks active.")
 end
 
 return StockingService
