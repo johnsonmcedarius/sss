@@ -1,4 +1,4 @@
--- Define types to ensure airtight compiler compliance
+--!strict
 export type RarityData = {
 	Weight: number,
 	MinStock: number,
@@ -11,19 +11,68 @@ export type ItemProfile = {
 	Theme: string,
 	Category: "Shoes" | "Clothing" | "Accessories",
 	Rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary",
-	MeshName: string?,       -- Defined if using unique 3D model geometries (Shoes/Accessories)
-	TextureId: string?,      -- Fallback flat texture
-	MannequinType: string?,  -- "HangingFullBody" | "HangingLegs" | "HangingTorso"
-	ShirtTemplate: string?,  -- Specific Shirt asset ID
-	PantsTemplate: string?,  -- Specific Pants asset ID
+	MeshName: string?, 
+	TextureId: string?, 
+	MannequinType: string?, 
+	ShirtTemplate: string?, 
+	PantsTemplate: string?, 
+}
+
+export type ExpansionData = {
+	Cost: number,
+	Size: number, -- Symmetrical boundary dimensions (e.g. 24 = 24x24 studs plot size)
 }
 
 local ShopConfig = {
-	-- Centralized configuration for dynamic slot generation
-	MAX_SHOP_SLOTS = 3,
+	MAX_SHOP_SLOTS = 10,
 
-	-- Airtight top-level Pricing Matrix (Category + Rarity lookup)
-	-- No more duplicating price numbers per item mesh! 
+	-- ============================================================================
+	-- STEP 1.2: ECONOMY CONFIGURATION EXPANSIONS
+	-- ============================================================================
+
+	-- Sizing expansion configuration tiers
+	ExpansionTiers = {
+		[1] = { Cost = 0, Size = 12 },        -- Tier 1 is baseline default plot size
+		[2] = { Cost = 10000, Size = 18 },    -- Tier 2 boundary size adjustment
+		[3] = { Cost = 50000, Size = 24 },
+		[4] = { Cost = 250000, Size = 36 },
+		[5] = { Cost = 1000000, Size = 48 },  -- Max Tier 5 luxury boutique blueprint size
+	} :: { [number]: ExpansionData },
+
+	-- Authoritative server weather tags parsed by EconomyService multiplier engines
+	WeatherMultipliers = {
+		["Sunny"] = 1.0,
+		["Rainy"] = 1.2,          -- Rain keeps people inside your boutique cozy shopping!
+		["Golden Hour"] = 1.5,
+		["Eclipse"] = 5.0,        -- Ultra-rare celestial eclipse multiplier surge!
+	} :: { [string]: number },
+
+	-- 5-Level structured leveling cost thresholds mapped by workforce position signatures
+	StaffUpgrades = {
+		Cashier = {
+			[1] = 500,    -- Cost to hire / upgrade to Level 1
+			[2] = 1500,   -- Cost to upgrade to Level 2
+			[3] = 4500,
+			[4] = 12000,
+			[5] = 35000,   -- Max Level 5 Master Speed Cashier checkout cap
+		},
+		Stockman = {
+			[1] = 400,
+			[2] = 1200,
+			[3] = 3500,
+			[4] = 9000,
+			[5] = 25000,
+		},
+		Janitor = {
+			[1] = 250,
+			[2] = 750,
+			[3] = 2000,
+			[4] = 5500,
+			[5] = 15000,
+		},
+	} :: { [string]: { [number]: number } },
+
+	-- Categories Pricing Matrix (Category + Rarity baseline matrix lookup)
 	PricingMatrix = {
 		Shoes = {
 			Common = 100,
@@ -48,116 +97,26 @@ local ShopConfig = {
 		},
 	} :: { [string]: { [string]: number } },
 
-	-- Rarities and their unboxing/shop capacities
 	Rarities = {
-		Common = {
-			Weight = 50,
-			MinStock = 10,
-			MaxStock = 20,
-			Multiplier = 1.0,
-			BaseCost = 100,
-		} :: RarityData,
-
-		Uncommon = {
-			Weight = 30,
-			MinStock = 5,
-			MaxStock = 10,
-			Multiplier = 1.5,
-			BaseCost = 250,
-		} :: RarityData,
-
-		Rare = {
-			Weight = 13,
-			MinStock = 2,
-			MaxStock = 5,
-			Multiplier = 2.5,
-			BaseCost = 500,
-		} :: RarityData,
-
-		Epic = {
-			Weight = 5,
-			MinStock = 1,
-			MaxStock = 2,
-			Multiplier = 4.0,
-			BaseCost = 1000,
-		} :: RarityData,
-
-		Legendary = {
-			Weight = 2,
-			MinStock = 0,
-			MaxStock = 1,
-			Multiplier = 8.0,
-			BaseCost = 2500,
-		} :: RarityData,
+		Common = { Weight = 50, MinStock = 10, MaxStock = 20, Multiplier = 1.0, BaseCost = 100 } :: RarityData,
+		Uncommon = { Weight = 30, MinStock = 5, MaxStock = 10, Multiplier = 1.5, BaseCost = 250 } :: RarityData,
+		Rare = { Weight = 13, MinStock = 2, MaxStock = 5, Multiplier = 2.5, BaseCost = 500 } :: RarityData,
+		Epic = { Weight = 5, MinStock = 1, MaxStock = 2, Multiplier = 4.0, BaseCost = 1000 } :: RarityData,
+		Legendary = { Weight = 2, MinStock = 0, MaxStock = 1, Multiplier = 8.0, BaseCost = 2500 } :: RarityData,
 	},
 
-
 	Items = {
-		-- SHOES CATEGORY (Stored in ShoeMeshes folder)
-		["StreetwearHeel"] = {
-			Theme = "Streetwear",
-			Category = "Shoes",
-			Rarity = "Common",
-			MeshName = "StreetwearHeel"
-		} :: ItemProfile,
-
-		["StreetwearSneaker"] = {
-			Theme = "Streetwear",
-			Category = "Shoes",
-			Rarity = "Common",
-			MeshName = "StreetwearSneaker"
-		} :: ItemProfile,
-
-		["PreppyVans"] = {
-			Theme = "Preppy",
-			Category = "Shoes",
-			Rarity = "Uncommon",
-			MeshName = "PreppyVans"
-		} :: ItemProfile,
-
-		["CyberSneaker"] = {
-			Theme = "Cyberpunk",
-			Category = "Shoes",
-			Rarity = "Legendary",
-			MeshName = "CyberSneaker"
-		} :: ItemProfile,
-
-		-- CLOTHING CATEGORY (Clones universal hanger base + wraps textures)
-		["StreetwearHoodie"] = {
-			Theme = "Streetwear",
-			Category = "Clothing",
-			Rarity = "Common",
-			MannequinType = "HangingTorso",
-			ShirtTemplate = "rbxassetid://13406201389" -- Use actual template image assets here!
-		} :: ItemProfile,
-
-		["CyberpunkCoat"] = {
-			Theme = "Cyberpunk",
-			Category = "Clothing",
-			Rarity = "Rare",
-			MannequinType = "HangingFullBody",
-			ShirtTemplate = "rbxassetid://5916676808",
-			PantsTemplate = "rbxassetid://18105944238"
-		} :: ItemProfile,
-
-		-- ACCESSORIES CATEGORY (Stored in AccessoryMeshes folder)
-		["CyberpunkNecklace"] = {
-			Theme = "Cyberpunk",
-			Category = "Accessories",
-			Rarity = "Epic",
-			MeshName = "CyberpunkNecklace"
-		} :: ItemProfile,
-
-		["PreppyHat"] = {
-			Theme = "Preppy",
-			Category = "Accessories",
-			Rarity = "Common",
-			MeshName = "PreppyHat"
-		} :: ItemProfile,
+		["StreetwearHeel"] = { Theme = "Streetwear", Category = "Shoes", Rarity = "Common", MeshName = "StreetwearHeel" } :: ItemProfile,
+		["StreetwearSneaker"] = { Theme = "Streetwear", Category = "Shoes", Rarity = "Common", MeshName = "StreetwearSneaker" } :: ItemProfile,
+		["PreppyVans"] = { Theme = "Preppy", Category = "Shoes", Rarity = "Uncommon", MeshName = "PreppyVans" } :: ItemProfile,
+		["CyberSneaker"] = { Theme = "Cyberpunk", Category = "Shoes", Rarity = "Legendary", MeshName = "CyberSneaker" } :: ItemProfile,
+		["StreetwearHoodie"] = { Theme = "Streetwear", Category = "Clothing", Rarity = "Common", MannequinType = "HangingTorso", ShirtTemplate = "rbxassetid://13406201389" } :: ItemProfile,
+		["CyberpunkCoat"] = { Theme = "Cyberpunk", Category = "Clothing", Rarity = "Rare", MannequinType = "HangingFullBody", ShirtTemplate = "rbxassetid://5916676808", PantsTemplate = "rbxassetid://18105944238" } :: ItemProfile,
+		["CyberpunkNecklace"] = { Theme = "Cyberpunk", Category = "Accessories", Rarity = "Epic", MeshName = "CyberpunkNecklace" } :: ItemProfile,
+		["PreppyHat"] = { Theme = "Preppy", Category = "Accessories", Rarity = "Common", MeshName = "PreppyHat" } :: ItemProfile,
 	} :: { [string]: ItemProfile }
 }
 
--- Extracts name components from tools (e.g. "Vintage Common Crate" -> Style: "Vintage", Rarity: "Common")
 function ShopConfig.ParseCrateName(toolName: string): { Name: string, Style: string, Rarity: string }?
 	local matchedRarity: string? = nil
 
@@ -173,12 +132,10 @@ function ShopConfig.ParseCrateName(toolName: string): { Name: string, Style: str
 		return nil
 	end
 
-	-- Isolate the style string by filtering out the rarity and "Crate" words
 	local cleanString: string = string.gsub(toolName, matchedRarity, "")
 	cleanString = string.gsub(cleanString, "Crate", "")
-	cleanString = string.gsub(cleanString, "%s+", " ") -- Flatten duplicate whitespaces
+	cleanString = string.gsub(cleanString, "%s+", " ")
 
-	-- Trim flanking whitespaces
 	local style: string = string.match(cleanString, "^%s*(.-)%s*$") or "Unknown"
 
 	return {
