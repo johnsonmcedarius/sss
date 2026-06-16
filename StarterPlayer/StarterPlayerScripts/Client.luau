@@ -31,11 +31,13 @@ local playerGui = player:WaitForChild("PlayerGui")
 local coreGui: ScreenGui = playerGui:WaitForChild("CoreGui")
 local guiVisual: Folder = coreGui.Visual
 local toolbar: Frame = coreGui:WaitForChild("Toolbar")
+local buildGui: ScreenGui = playerGui:WaitForChild("BuildGui")
 
 local undoButton: ImageButton = toolbar:WaitForChild("Undo")
 local redoButton: ImageButton = toolbar:WaitForChild("Redo")
 local deleteButton: ImageButton = toolbar:WaitForChild("Delete")
 local gridButton: ImageButton = toolbar:WaitForChild("Grid")
+local paintButton: ImageButton = toolbar:WaitForChild("Paint")
 
 local cancelFrame: Frame = coreGui:WaitForChild("CancelFrame")
 local cancelTextLabel: TextLabel = cancelFrame:FindFirstChildOfClass("TextLabel")
